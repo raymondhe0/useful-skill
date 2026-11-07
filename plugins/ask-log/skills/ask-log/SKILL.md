@@ -42,12 +42,13 @@ Run this at the end of every turn while auto mode is on (the hook's reminder say
    EOF
    ```
    It saves the state next to the log and re-renders the log: one section per question, newest first. Never edit the `.md` or `.json` by hand; the questions are the user's words and the script escapes them so they render exactly.
-5. If `display` is `file`, stop here: the open preview refreshes by itself. Do not open or edit the file. If `display` is `artifact`, publish the log with the Artifact tool, `file_path` = the `log` path the script printed. This is a Markdown artifact on purpose: this skill instructs a `.md` publish.
-   - First publish in this session: add `icon: "list"`, `title: "Ask Log"` and `description: "Every question asked in this session, with a summary of each answer."`.
-   - Later publishes: same `file_path`, no `icon`, so the same link updates.
+5. If `display` is `file`, stop here: the open preview refreshes by itself. Do not open or edit the file. If `display` is `artifact`, publish with the Artifact tool, `file_path` = the `publish` path `fill` printed. It is a copy of the log named after the session, because a Markdown artifact takes its name from the file; this is what makes the artifact's name follow the session's. This is a Markdown artifact on purpose: this skill instructs a `.md` publish.
+   - When `fill` printed an `artifact_url`, or you published this log earlier in this conversation, pass that link as `url`, so a renamed file updates the same page. Add no `icon`.
+   - Otherwise this is the first publish: add `icon: "list"` and `description: "Every question asked in this session, with a summary of each answer."`.
+   - When `fill` printed `artifact_url: null` and you have the link, add `"artifact_url": "<link>"` to the JSON of your next `fill`, so the script keeps it.
 6. Do not mention the update in the closing message unless it failed. If the script exits with an error, say so in one line and keep answering the user.
 
 ## Format rules
 
-- Fixed labels stay in English (`Ask Log`, `Where I am`, `Questions`); summaries and Where I am text are Chinese.
+- The page heading is the session's name. Fixed labels stay in English (`Ask Log`, `Where I am`, `Questions`); summaries and Where I am text are Chinese.
 - Entries are never reordered, renumbered or deleted; the script owns numbering and layout.

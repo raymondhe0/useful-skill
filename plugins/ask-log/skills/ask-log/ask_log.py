@@ -10,7 +10,7 @@ else Claude publishes it as an artifact. Every command prints which one as `disp
 
   ask_log.py start  --session SID   create the log (if missing) and turn auto mode on
   ask_log.py append --session SID   add questions not yet in the log, print them as JSON
-  ask_log.py fill   --session SID   read {"where_i_am": [...], "summaries": {"5": [...]}} on stdin
+  ask_log.py fill   --session SID   read {"where_i_am": [...], "summaries": {"5": [...]}, "artifact_url": "..."} on stdin
   ask_log.py off    --session SID   turn auto mode off (the log is kept)
   ask_log.py hook                   UserPromptSubmit hook: remind Claude while auto mode is on
 """
@@ -40,6 +40,8 @@ ANSWER_LIMIT = 6000
 ASSOCIATIONS_KEY = "workbench.editorAssociations"
 PREVIEW_EDITOR = "vscode.markdown.preview.editor"
 SETTINGS_PICKUP_SECONDS = 4  # 1 s was too short on 1.145; 2 s was enough
+ARTIFACT_URL_PREFIX = "https://claude.ai/"
+TITLE_MAX_CHARS = 60  # 60 four-byte characters plus ".md" still fit a 255-byte file name
 
 
 def display_mode():
@@ -313,14 +315,17 @@ def local_time(ts, fmt="%Y-%m-%d %H:%M"):
         return ""
 
 
+def escape_md(text):
+    return "".join("\\" + c if c in MD_ESCAPE else c for c in text)
+
+
 def quote_verbatim(text):
     """Blockquote that renders the text exactly: punctuation escaped, line breaks and indents kept."""
     lines = []
     for raw in text.strip("\n").split("\n"):
         line = raw.rstrip()
         body = line.lstrip(" ")
-        esc = "".join("\\" + c if c in MD_ESCAPE else c for c in body)
-        lines.append("&nbsp;" * (len(line) - len(body)) + esc)
+        lines.append("&nbsp;" * (len(line) - len(body)) + escape_md(body))
     return "\n".join("> " + line + ("  " if line and i < len(lines) - 1 else "") if line else ">"
                      for i, line in enumerate(lines))
 
@@ -336,8 +341,8 @@ def render(state):
         summary = bullet_list(e["summary"]) if e["summary"] else "_Summary pending._"
         sections.append(f"### Q{e['n']} · {local_time(e['ts'], '%m-%d %H:%M')}\n\n{quote_verbatim(e['question'])}\n\n{summary}")
     return (
-        "# Ask Log\n\n"
-        f"Session `{state['session'][:8]}` · started {state['started']} · `{state['project']}` · "
+        f"# {escape_md(state.get('title') or 'Ask Log')}\n\n"
+        f"Ask Log · session `{state['session'][:8]}` · started {state['started']} · `{state['project']}` · "
         f"{len(state['entries'])} question{'' if len(state['entries']) == 1 else 's'}, newest first\n\n"
         f"## Where I am\n\n{bullet_list(state['where_i_am']) or '_Pending._'}\n\n"
         "## Questions\n\n"
@@ -359,6 +364,40 @@ def save(sid, state):
         f.write(render(state))
 
 
+def session_title(transcript):
+    """The conversation's current name. A name the user gave wins over a generated one."""
+    custom = generated = None
+    with open(transcript, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if '-title"' not in line[:80]:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if rec.get("type") == "custom-title":
+                custom = rec.get("customTitle") or custom
+            elif rec.get("type") == "ai-title":
+                generated = rec.get("aiTitle") or generated
+    return " ".join((custom or generated or "").split())
+
+
+def publish_name(sid, title):
+    """A Markdown artifact takes its name from the file, so the file is named after the session."""
+    name = " ".join(re.sub(r'[\\/:*?"<>|\x00-\x1f\x7f]', " ", title).split())[:TITLE_MAX_CHARS].strip(" .")
+    return (name or f"Ask Log {sid[:8]}") + ".md"
+
+
+def write_publish_copy(sid, state):
+    folder = os.path.join(STATE_DIR, "publish", sid)
+    if os.path.isdir(folder):
+        shutil.rmtree(folder)
+    os.makedirs(folder)
+    path = os.path.join(folder, publish_name(sid, state.get("title") or ""))
+    shutil.copyfile(log_path(sid), path)
+    return path
+
+
 def cmd_start(sid):
     os.makedirs(STATE_DIR, exist_ok=True)
     created = not os.path.exists(state_path(sid))
@@ -369,6 +408,7 @@ def cmd_start(sid):
             "session": sid,
             "project": os.path.basename(os.path.dirname(transcript)),
             "started": local_time(first[0]["ts"] if first else datetime.now().astimezone().isoformat()),
+            "title": session_title(transcript),
             "where_i_am": [],
             "entries": [],
         })
@@ -381,7 +421,9 @@ def cmd_start(sid):
 
 def cmd_append(sid):
     state = load(sid)
-    turns = read_turns(find_transcript(sid))
+    transcript = find_transcript(sid)
+    state["title"] = session_title(transcript) or state.get("title", "")
+    turns = read_turns(transcript)
     last = state["entries"][-1]["uuid"] if state["entries"] else None
     idx = next((i for i, t in enumerate(turns) if t["uuid"] == last), None) if last else -1
     if idx is None:
@@ -411,13 +453,18 @@ def cmd_fill(sid):
         by_n[n]["summary"] = [items] if isinstance(items, str) else list(items)
     if "where_i_am" in data:
         state["where_i_am"] = list(data["where_i_am"])
+    if str(data.get("artifact_url") or "").startswith(ARTIFACT_URL_PREFIX):
+        state["artifact_url"] = data["artifact_url"]
     save(sid, state)
     pending = [e["n"] for e in state["entries"] if not e["summary"]]
     result = {"log": log_path(sid), "display": display_mode(), "pending_summaries": pending}
     if result["display"] == "file" and os.path.exists(open_pending_path(sid)):
         result["opened"] = open_in_vscode(log_path(sid))
         os.remove(open_pending_path(sid))
-    print(json.dumps(result))
+    if result["display"] == "artifact":
+        result["publish"] = write_publish_copy(sid, state)
+        result["artifact_url"] = state.get("artifact_url")
+    print(json.dumps(result, ensure_ascii=False))
 
 
 def cmd_off(sid):
@@ -438,7 +485,7 @@ def cmd_hook():
     finish = (
         "The open preview refreshes by itself, so there is nothing to publish."
         if display_mode() == "file"
-        else f"Then republish {log_path(sid)} as the same artifact."
+        else "Then publish the `publish` path that step prints as the same artifact, passing its `artifact_url` as `url`."
     )
     context = (
         "ask-log auto mode is on for this session. When this turn's work is done, before the "

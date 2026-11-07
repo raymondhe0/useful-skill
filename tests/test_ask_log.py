@@ -277,3 +277,85 @@ def test_setting_follows_a_symlinked_file(tmp_path):
 
 def test_preview_glob_cannot_catch_the_plugins_own_files():
     assert GLOB.startswith("**/") and GLOB.endswith("/ask-log/*.md") and GLOB != "**/ask-log/*.md"
+
+
+def write_transcript(config, sid, *records):
+    folder = config / "projects" / "demo"
+    folder.mkdir(parents=True, exist_ok=True)
+    with open(folder / f"{sid}.jsonl", "a", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+
+def run_cmd(config, command, sid, stdin=None, entry="claude-desktop"):
+    env = {**os.environ, "CLAUDE_CONFIG_DIR": str(config), "CLAUDE_CODE_ENTRYPOINT": entry}
+    out = subprocess.run([sys.executable, SCRIPT, command, "--session", sid], input=stdin, env=env,
+                         capture_output=True, text=True, check=True).stdout
+    return json.loads(out)
+
+
+def custom(title, sid="s1"):
+    return {"type": "custom-title", "customTitle": title, "sessionId": sid}
+
+
+def generated(title, sid="s1"):
+    return {"type": "ai-title", "aiTitle": title, "sessionId": sid}
+
+
+def test_a_given_name_beats_a_generated_one_and_the_last_rename_wins(tmp_path):
+    write_transcript(tmp_path, "s1", generated("auto"))
+    path = tmp_path / "projects" / "demo" / "s1.jsonl"
+    assert ask_log.session_title(path) == "auto"
+    write_transcript(tmp_path, "s1", custom("first"), custom("second"), generated("later auto"))
+    assert ask_log.session_title(path) == "second"
+
+
+def test_file_name_is_safe_for_any_session_name():
+    assert ask_log.publish_name("abcdef123456", "上传 /ask-log 到 GitHub") == "上传 ask-log 到 GitHub.md"
+    assert ask_log.publish_name("abcdef123456", 'a:b*c?"d<e>|f\\g') == "a b c d e f g.md"
+    assert ask_log.publish_name("abcdef123456", "../../etc") == "etc.md"
+    assert ask_log.publish_name("abcdef123456", "") == "Ask Log abcdef12.md"
+    assert ask_log.publish_name("abcdef123456", "///") == "Ask Log abcdef12.md"
+    assert len(ask_log.publish_name("abcdef123456", "😀" * 200).encode()) <= 255
+
+
+def test_published_file_follows_a_rename_and_leaves_only_one_copy(tmp_path):
+    write_transcript(tmp_path, "s1", custom("old name"))
+    run_cmd(tmp_path, "start", "s1")
+    run_cmd(tmp_path, "append", "s1")
+    first = run_cmd(tmp_path, "fill", "s1", '{"where_i_am": ["x"]}')
+    assert os.path.basename(first["publish"]) == "old name.md" and first["artifact_url"] is None
+
+    write_transcript(tmp_path, "s1", custom("new name"))
+    run_cmd(tmp_path, "append", "s1")
+    url = ask_log.ARTIFACT_URL_PREFIX + "artifact/abc"
+    second = run_cmd(tmp_path, "fill", "s1", json.dumps({"artifact_url": url}))
+    assert os.path.basename(second["publish"]) == "new name.md" and second["artifact_url"] == url
+    assert os.listdir(os.path.dirname(second["publish"])) == ["new name.md"]
+    page = open(second["publish"], encoding="utf-8").read()
+    assert page.startswith("# new name\n") and page == open(second["log"], encoding="utf-8").read()
+    assert run_cmd(tmp_path, "fill", "s1", "{}")["artifact_url"] == url
+
+
+def test_a_link_from_elsewhere_is_not_kept(tmp_path):
+    write_transcript(tmp_path, "s1", custom("name"))
+    run_cmd(tmp_path, "start", "s1")
+    assert run_cmd(tmp_path, "fill", "s1", '{"artifact_url": "https://example.com/x"}')["artifact_url"] is None
+
+
+def test_the_vscode_panel_gets_the_name_but_no_publish_file(tmp_path):
+    write_transcript(tmp_path, "s1", custom("name"))
+    run_cmd(tmp_path, "start", "s1", entry="claude-vscode")
+    out = run_cmd(tmp_path, "fill", "s1", "{}", entry="claude-vscode")
+    assert "publish" not in out and "artifact_url" not in out
+    assert not (tmp_path / "ask-log" / "publish").exists()
+    assert open(out["log"], encoding="utf-8").read().startswith("# name\n")
+
+
+def test_odd_names_stay_plain_text_in_the_heading():
+    html_out = MD.render(ask_log.render(state(title="# a *b* <i>")))
+    assert "<h1># a *b* &lt;i&gt;</h1>" in html_out
+
+
+def test_a_log_from_before_names_still_renders():
+    assert ask_log.render(state()).startswith("# Ask Log\n")
