@@ -271,11 +271,19 @@ export function previewTargets(sessions: BoardSession[], previews: Record<string
   return sessions.filter(s => {
     if (!isCard(s, now)) return false
     const cached = previews[s.id]
-    return cached === undefined || cached.at !== s.lastActivityAt || cached.needsInput === undefined
+    // A session held in Needs me by its question is re-read every poll, so real work moves it to Running at once.
+    return cached === undefined || cached.at !== s.lastActivityAt || cached.needsInput === undefined || (s.isRunning && cached.needsInput === true)
   })
 }
 
 // A dismissed card stays in Finished, a shelved one in Idle, until the session has new activity.
+// Opening a session can make it look busy for a moment. A turn that really started writes the person's message or new
+// output, so while the last thing in the conversation is still its question, it has not moved on. A message of theirs
+// it has not answered yet is the opposite: that session is starting work.
+function isParkedOnQuestion(s: BoardSession, preview: Preview | undefined, dismissed: Record<string, string>): boolean {
+  return !s.isSelf && preview?.needsInput === true && preview.reason !== 'not-picked-up' && dismissed[s.id] !== s.lastActivityAt
+}
+
 export function columnsOf(
   sessions: BoardSession[],
   now: number,
@@ -289,7 +297,7 @@ export function columnsOf(
   const idle: BoardSession[] = []
   for (const s of sessions) {
     if (s.waitingFor && !s.isSelf && dismissed[s.id] !== s.lastActivityAt) needsMe.push(s)
-    else if (s.isRunning) running.push(s)
+    else if (s.isRunning && !isParkedOnQuestion(s, previews[s.id], dismissed)) running.push(s)
     else if (!isRecent(s, now) || shelved[s.id] === s.lastActivityAt) idle.push(s)
     else if (!s.isSelf && previews[s.id]?.needsInput && dismissed[s.id] !== s.lastActivityAt) needsMe.push(s)
     else recent.push(s)
@@ -551,13 +559,15 @@ export function displayTitle(live: LiveFile | undefined, meta: TranscriptMeta): 
 const WAITING_MARGIN_MS = 30_000
 const STILL_WRITING_MS = 60_000
 
-export function liveToSession(live: LiveFile, title: string, transcriptMs: number, transcript: string | undefined, now: number): BoardSession {
-  const movedOn = live.status === 'waiting' && transcriptMs - live.statusUpdatedAt > WAITING_MARGIN_MS
+// conversationMs: when the conversation itself last changed. The file's time is no use for this: opening a session
+// appends bookkeeping lines to it, and that must not read as the session having moved on.
+export function liveToSession(live: LiveFile, title: string, transcriptMs: number, transcript: string | undefined, now: number, conversationMs = transcriptMs): BoardSession {
+  const movedOn = live.status === 'waiting' && conversationMs - live.statusUpdatedAt > WAITING_MARGIN_MS
   return {
     id: live.hostSessionId ?? live.sessionId,
     title,
     cwd: live.cwd,
-    isRunning: live.status === 'busy' || (movedOn && now - transcriptMs < STILL_WRITING_MS),
+    isRunning: live.status === 'busy' || (movedOn && now - conversationMs < STILL_WRITING_MS),
     isSelf: false,
     // Reopening VS Code rewrites an idle session's status, and that is not activity; its transcript's time is.
     lastActivityAt: new Date(live.status === 'idle' && transcriptMs > 0 ? transcriptMs : Math.max(live.statusUpdatedAt, transcriptMs)).toISOString(),
@@ -616,6 +626,17 @@ export function transcriptMeta(text: string): TranscriptMeta {
   }
   const title = custom ?? ai ?? clip(prompt)
   return { ...(title ? { title } : {}), ...(entrypoint ? { entrypoint } : {}), ...(cwd ? { cwd } : {}) }
+}
+
+// When the last message or tool step was written; undefined if the tail holds none.
+export function lastConversationMs(tail: string): number | undefined {
+  let at: number | undefined
+  for (const row of transcriptLines(tail)) {
+    if ((row.type !== 'user' && row.type !== 'assistant') || row.isSidechain === true) continue
+    const ms = Date.parse(str(row.timestamp) ?? '')
+    if (ms) at = ms
+  }
+  return at
 }
 
 type Block = { type?: string; text?: string; name?: string; input?: { ask?: unknown; questions?: { question?: unknown }[] } }

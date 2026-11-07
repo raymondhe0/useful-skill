@@ -29,6 +29,7 @@ import {
   displayTitle,
   isOpenableLink,
   liveToSession,
+  lastConversationMs,
   mergeSessions,
   plainPreview,
   questionOf,
@@ -1410,6 +1411,53 @@ test('liveToSession: "waiting" is believed only until the transcript moves on (r
   const staleAndQuiet = liveToSession(asLiveFile(LIVE_DESKTOP)!, 'x', at + 600_000, '/t', at + 900_000)
   expect(staleAndQuiet.waitingFor).toBeUndefined()
   expect(staleAndQuiet.isRunning).toBe(false)
+})
+
+test('liveToSession: bookkeeping lines written when a session is opened do not end "waiting" or make it running', () => {
+  const at = LIVE_DESKTOP.statusUpdatedAt
+  const opened = liveToSession(asLiveFile(LIVE_DESKTOP)!, 'x', at + 600_000, '/t', at + 601_000, at - 1000)
+  expect(opened.waitingFor).toBe('input needed')
+  expect(opened.isRunning).toBe(false)
+  const moved = liveToSession(asLiveFile(LIVE_DESKTOP)!, 'x', at + 600_000, '/t', at + 601_000, at + 600_000)
+  expect(moved.waitingFor).toBeUndefined()
+  expect(moved.isRunning).toBe(true)
+})
+
+test('lastConversationMs reads messages only, not bookkeeping lines', () => {
+  const tail = [
+    JSON.stringify({ type: 'assistant', timestamp: '2026-11-07T05:00:00.000Z', message: { content: [] } }),
+    JSON.stringify({ type: 'cost-state', timestamp: '2026-11-07T06:00:00.000Z' }),
+    JSON.stringify({ type: 'assistant', isSidechain: true, timestamp: '2026-11-07T06:30:00.000Z', message: { content: [] } }),
+    JSON.stringify({ type: 'mode' }),
+  ].join('\n')
+  expect(lastConversationMs(tail)).toBe(Date.parse('2026-11-07T05:00:00.000Z'))
+  expect(lastConversationMs(JSON.stringify({ type: 'mode' }))).toBeUndefined()
+})
+
+test('columnsOf: a session that looks busy stays in Needs me while its question is still the last thing said', () => {
+  const s = { id: 'q', title: 't', cwd: '/x', isRunning: true, isSelf: false, lastActivityAt: new Date(NOW - 1000).toISOString(), isRemoteControlled: false }
+  const asked = { q: { at: NOW, needsInput: true, reason: 'next-step' } } as never
+  expect(columnsOf([s], NOW, asked).needsMe.map(x => x.id)).toEqual(['q'])
+  expect(columnsOf([s], NOW, asked).running).toHaveLength(0)
+  // the person answered: that is real work
+  expect(columnsOf([s], NOW, { q: { at: NOW, needsInput: true, reason: 'not-picked-up' } } as never).running.map(x => x.id)).toEqual(['q'])
+  // new output replaced the question
+  expect(columnsOf([s], NOW, { q: { at: NOW, needsInput: false } } as never).running.map(x => x.id)).toEqual(['q'])
+  // dismissed, or this session itself
+  expect(columnsOf([s], NOW, asked, { q: s.lastActivityAt }).running.map(x => x.id)).toEqual(['q'])
+  expect(columnsOf([{ ...s, isSelf: true }], NOW, asked).running.map(x => x.id)).toEqual(['q'])
+  // an old question does not come back to Needs me by being opened
+  const old = { ...s, lastActivityAt: new Date(NOW - 3 * 86_400_000).toISOString() }
+  expect(columnsOf([old], NOW, asked).idle.map(x => x.id)).toEqual(['q'])
+})
+
+test('previewTargets: a busy session held by its question is re-read every poll, a quiet one is not', () => {
+  const at = new Date(NOW - 1000).toISOString()
+  const s = { id: 'q', title: 't', cwd: '/x', isRunning: true, isSelf: false, lastActivityAt: at, isRemoteControlled: false }
+  const asked = { q: { at, needsInput: true, reason: 'next-step' } } as never
+  expect(previewTargets([s], asked, NOW).map(x => x.id)).toEqual(['q'])
+  expect(previewTargets([{ ...s, isRunning: false }], asked, NOW)).toHaveLength(0)
+  expect(previewTargets([s], { q: { at, needsInput: false } } as never, NOW)).toHaveLength(0)
 })
 
 test('displayTitle: a real name wins, a derived folder-style name loses to the transcript title', () => {

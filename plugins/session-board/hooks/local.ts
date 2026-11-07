@@ -7,6 +7,7 @@ import {
   isListedWhenClosed,
   linkOf,
   liveToSession,
+  lastConversationMs,
   summaryFromTranscript,
   transcriptMeta,
   type LiveFile,
@@ -148,7 +149,15 @@ export async function readLocalSessions($: EngineInterface, now: number): Promis
       }
     }
     const meta = transcript ? await metaOf($, transcript) : {}
-    return liveToSession(f, displayTitle(f, meta), transcript?.mtimeMs ?? 0, transcript?.path, now)
+    let conversationMs: number | undefined
+    if (f.status === 'waiting' && transcript) {
+      try {
+        conversationMs = lastConversationMs(await readTail($, transcript.path))
+      } catch {
+        conversationMs = undefined
+      }
+    }
+    return liveToSession(f, displayTitle(f, meta), transcript?.mtimeMs ?? 0, transcript?.path, now, conversationMs)
   })
 
   const liveIds = new Set(live.map(f => f.sessionId))
