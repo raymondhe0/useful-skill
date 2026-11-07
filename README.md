@@ -5,6 +5,7 @@ Personal plugins for [Claude Code](https://claude.com/claude-code).
 | Plugin | What it does |
 |---|---|
 | [`ask-log`](plugins/ask-log/) | Keeps a running log of every question asked in a session, word for word, with a summary of each answer, on a page that updates after every turn. |
+| [`session-board`](plugins/session-board/) | A board of your Claude Code sessions across the desktop app, VS Code and the terminal: running, needs me, finished, idle. |
 
 ## ask-log
 
@@ -53,3 +54,42 @@ python3 -m pytest tests
 ```
 
 The tests need `pytest` and `markdown-it-py`. Raise `version` in `plugins/ask-log/.claude-plugin/plugin.json` with each release, or installed copies will not update.
+
+## session-board
+
+### Install
+
+Type this into a Claude Code conversation:
+
+```text
+/plugin install session-board --marketplace raymondhe0/useful-skill
+```
+
+The board needs the extension or CLI at 2.1.299 or later to draw its pane. Start a new conversation afterwards: it opens by itself, or type `/board`. In VS Code, run **Developer: Reload Window** first if `/board` doesn't appear.
+
+### What it shows
+
+Sessions on this computer, sorted into Running, Needs me, Finished (24h) and Idle, each with its latest reply and your usage so far. Press `?` on the board for the rules.
+
+| | Desktop app, for its own sessions | Anywhere else |
+|---|---|---|
+| Status and latest reply | Yes | Yes |
+| Open a session | Yes | VS Code and desktop sessions; terminal sessions have no button |
+| Send a message | Yes | Only to a session that is still running |
+| Stop, change model or effort | Yes | Not shown |
+| Context used | Every running session | Only the current session |
+
+### Good to know
+
+- **It reads your conversations:** the board reads `~/.claude/sessions/` and the end of each transcript in `~/.claude/projects/`, and keeps previews in the plugin's store in `~/.claude/plugins/`. Nothing is sent anywhere, but previews may include whatever was in your conversations, so check before sharing a screenshot.
+- **A message starts a turn:** a message sent from VS Code or the terminal arrives as one from another session, and the other session starts working on it.
+- **Tested on:** macOS only. It should work on Linux, and probably won't list sessions correctly on Windows.
+- **Settings:** the plugin has two options, opening the board at session start and the refresh interval (3 seconds by default).
+
+### Develop
+
+```bash
+cd plugins/session-board && ./check.sh
+```
+
+This needs the `claude` CLI. [`FEATURES.md`](plugins/session-board/FEATURES.md), in Chinese, lists every feature with how it is verified. Raise `version` in `plugins/session-board/.claude-plugin/plugin.json` with each release.

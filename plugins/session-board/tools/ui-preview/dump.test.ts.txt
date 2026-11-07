@@ -1,0 +1,42 @@
+import { mock, test } from 'claude-code/testing'
+const NOW = Date.parse('2026-11-07T03:20:00Z')
+const ok = (b: unknown) => ({ value: { content: [{ type: 'text', text: typeof b === 'string' ? b : JSON.stringify(b) }], isError: false } })
+const at = (m: number) => new Date(NOW - m * 60000).toISOString()
+const S = (id: string, title: string, m: number, x = {}) => ({ sessionId: `local_${id}`, title, cwd: '/Users/me/project', isRunning: false, lastActivityAt: at(m), link: `claude://claude.ai/epitaxy/local_${id}`, ...x })
+const list = [
+  S('aa', 'Backtest system docs', 0, { isRunning: true }),
+  S('bb', 'Upload ask-log to GitHub', 1, { remoteControlActive: true }),
+  S('cc', 'board改进', 1, { startedBy: 'local_bb' }),
+  S('dd', 'Ask-log session question log', 5),
+  S('ee', 'Ask-log session question log', 9),
+  S('ff', '功能迭代与性能优化', 60),
+  S('11', 'Old one', 4000), S('22', 'Older one', 9000),
+]
+const events: Record<string, string> = {
+  local_aa: '[user] Rewrite the operations doc\n[assistant] 正在核对第 4 节的命令，**还剩** 3 处默认值要改。',
+  local_bb: '[user] 上传\n[assistant] 对，我说的是改 VS Code 里的 ask-log，Claude desktop 应该保持现在的 artifact。不过有一点要更正：我上一条写的是"不再发布 artifact"，没有区分两边。',
+  local_cc: '[user] 开始改\n[assistant] 看板改好了（v0.20.1），也装到了你这台电脑上。现在 VS Code 和终端都能用，不再报红字。',
+  local_dd: '[user] /board-probe\n[assistant] 面板放置成功。要现在发布吗？',
+  local_ee: '[user] 今天天气\n[assistant] 我不知道你在哪个城市。告诉我城市，我上网查一下。',
+  local_ff: '[user] 全部资产\n[assistant] ## 核查通过\n今天三个任务都正常跑完，结果文件都有 `size` 列，行也是按 `size` 从小到大排的。我只读了文件和日志，没有改动。',
+}
+for (const surface of ['desktop', 'terminal'] as const) test(`dump ${surface}`, async ($, on) => {
+  mock.clock(on, { now: NOW })
+  mock.store(on)
+  on('ui.panes', () => ({ value: [{ id: 'session-board', title: 'Sessions', isPlaced: true }] }) as never)
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as never)
+  on('env.get', () => ({ value: undefined }) as never)
+  on('agent.list', () => ({ value: [] }) as never)
+  on('session.messages', () => ({ value: [{ role: 'assistant', text: '正在按截图调界面。', toolUses: [] }] }) as never)
+  on('mcp.call', ($, e) => {
+    if (e.tool === 'list_sessions') return ok(list)
+    if (e.tool === 'get_session') return e.args.session_id === 'self' ? ok(S('me', '保存数据', 0, { isRunning: true, model: 'claude-opus-5-5', effort: 'medium' })) : ok({ ...list.find(s => s.sessionId === e.args.session_id), model: 'claude-opus-5-5', effort: 'medium' })
+    if (e.tool === 'get_usage') return ok({ plan: { status: 'ok', windows: [{ label: '5-hour limit', percentUsed: 3, resetsIn: '1h' }, { label: 'Weekly · all models', percentUsed: 9, resetsIn: '1d' }] }, context: { status: 'ok', percentUsed: 21 } })
+    if (e.tool === 'list_events') return ok(events[String(e.args.session_id)] ?? '')
+    return ok('done')
+  })
+  const ui = await $.ui.mount({ plugin: 'session-board', surface, component: 'Pane', props: { title: 'Sessions', isFocused: false, bodyColumns: 120, placement: 'dock' as const, scroll: { offset: 0, bodyRows: 40 } }, requestId: 'session-board' })
+  await ui.press({ key: 'refresh' })
+  console.log(`@@TREE ${surface} ` + JSON.stringify(await ui.drawn()))
+  await ui.unmount()
+})

@@ -1,0 +1,20 @@
+{
+  "name": "session-board",
+  "version": "0.21.1",
+  "description": "Kanban board of Claude Code sessions in the desktop app, VS Code and the terminal: running, needs me, finished, idle",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "autoOpen": {
+      "type": "boolean",
+      "description": "Open the session board when a session starts, so it is already there when you switch sessions",
+      "default": true,
+      "title": "Open the board at session start"
+    },
+    "refreshSeconds": {
+      "type": "number",
+      "title": "Refresh interval (seconds)",
+      "description": "How often the board re-reads sessions; also the longest lag before another session's filing shows here (1–60)",
+      "default": 3
+    }
+  }
+}

@@ -1,11 +1,18 @@
 {
   "name": "useful-skill",
-  "owner": { "name": "raymondhe0" },
+  "owner": {
+    "name": "raymondhe0"
+  },
   "plugins": [
     {
       "name": "ask-log",
       "source": "./plugins/ask-log",
       "description": "Log every question in a session, word for word, with a summary of each answer, on a page that updates after every turn"
+    },
+    {
+      "name": "session-board",
+      "source": "./plugins/session-board",
+      "description": "Kanban board of Claude Code sessions in the desktop app, VS Code and the terminal: running, needs me, finished, idle"
     }
   ]
 }
