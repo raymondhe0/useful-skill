@@ -37,6 +37,7 @@ import {
   parseJudgement,
   textKeyOf,
   mergeSessions,
+  viewFor,
   nextUsage,
   plainPreview,
   questionOf,
@@ -1277,7 +1278,7 @@ for (const surface of SURFACES) {
     const info = await debugOf($)
     expect(info.role).toBe('follower')
     expect(info.leaseHolder).toBe(LEADER)
-    expect(info.sessions[0]).toMatchObject({ id: SELF, isSelf: true })
+    expect(info.sessions.find((x: { id: string }) => x.id === SELF)).toMatchObject({ id: SELF, isSelf: true })
   })
 
   test(`${surface}: as a follower, this session's own card shows its own latest update`, async ($, on) => {
@@ -1338,7 +1339,7 @@ test('board_debug reports columns, model, usage and preview lengths, never previ
   const text = String((answer as { result?: unknown }).result ?? '')
   const info = JSON.parse(text)
 
-  expect(info.version).toBe('0.23.1')
+  expect(info.version).toBe('0.24.0')
   expect(info.paneOpen).toBe(true)
   expect(info.canRunProcess).toBe(true)
   expect(info.error).toBeNull()
@@ -1453,7 +1454,8 @@ test('columnsOf: a session that looks busy stays in Needs me while its question 
   expect(columnsOf([s], NOW, { q: { at: NOW, needsInput: false } } as never).running.map(x => x.id)).toEqual(['q'])
   // dismissed, or this session itself
   expect(columnsOf([s], NOW, asked, { q: s.lastActivityAt }).running.map(x => x.id)).toEqual(['q'])
-  expect(columnsOf([{ ...s, isSelf: true }], NOW, asked).running.map(x => x.id)).toEqual(['q'])
+  // this session is treated like any other
+  expect(columnsOf([{ ...s, isSelf: true }], NOW, asked).needsMe.map(x => x.id)).toEqual(['q'])
   // an old question does not come back to Needs me by being opened
   const old = { ...s, lastActivityAt: new Date(NOW - 3 * 86_400_000).toISOString() }
   expect(columnsOf([old], NOW, asked).idle.map(x => x.id)).toEqual(['q'])
@@ -1537,11 +1539,11 @@ test('shouldLead: a session with the app tools takes over from a local-only leas
   expect(shouldLead({ id: 'other', until: NOW + 9000 }, 'me', NOW, true)).toBe(false)
 })
 
-test('columnsOf: a session marked waiting needs the person, even mid-run, until dismissed; this session never does', () => {
+test('columnsOf: a session marked waiting needs the person, even mid-run, until dismissed, on every board', () => {
   const base = { id: 'w', title: 't', cwd: '/x', isRunning: true, isSelf: false, lastActivityAt: new Date(NOW - 1000).toISOString(), isRemoteControlled: false, waitingFor: 'input needed' }
   expect(columnsOf([base], NOW).needsMe.map(s => s.id)).toEqual(['w'])
   expect(columnsOf([base], NOW, {}, { w: base.lastActivityAt }).running.map(s => s.id)).toEqual(['w'])
-  expect(columnsOf([{ ...base, isSelf: true }], NOW).needsMe).toHaveLength(0)
+  expect(columnsOf([{ ...base, isSelf: true }], NOW).needsMe.map(x => x.id)).toEqual(['w'])
   expect(columnsOf([{ ...base, isRunning: false }], NOW, {}, { w: base.lastActivityAt }).recent.map(s => s.id)).toEqual(['w'])
 })
 
@@ -1804,12 +1806,12 @@ for (const surface of SURFACES) {
     await ui.unmount()
   })
 
-  test(`${surface}: this session's card comes last in its column`, async ($, on) => {
+  test(`${surface}: this session's card keeps its place by time, like any other`, async ($, on) => {
     mock.clock(on, { now: NOW })
     mock.store(on)
     fakeServer(on, {
       list_sessions: () => listWith({ [RECENT]: { lastActivityAt: RECENT_AT } }),
-      get_session: args => ok(args.session_id === 'self' ? { ...GET_SESSION_SELF, isRunning: false, lastActivityAt: RECENT_AT } : { ...GET_SESSION_OTHER, sessionId: args.session_id }),
+      get_session: args => ok(args.session_id === 'self' ? { ...GET_SESSION_SELF, isRunning: false, lastActivityAt: new Date(Date.parse(RECENT_AT) - 1000).toISOString() } : { ...GET_SESSION_OTHER, sessionId: args.session_id }),
     })
     const ui = await mountOn(surface)($)
     await ui.press({ key: 'refresh' })
@@ -1939,14 +1941,14 @@ test('applyJudgement raises a card only for the reply that was judged', () => {
   expect(applyJudgement(asked, { key: '', needs: true, ask: 'x' })).toBe(asked)
 })
 
-test('judgeTargets skips what is running, this session, old, already caught, already judged or already tried', () => {
+test('judgeTargets skips what is running, old, already caught, already judged or already tried', () => {
   const at = new Date(NOW - 1000).toISOString()
   const s = { id: 'a', title: 't', cwd: '/x', isRunning: false, isSelf: false, lastActivityAt: at, isRemoteControlled: false }
   const previews = { a: { at, needsInput: false, textKey: 'k' } }
   const none = new Set<string>()
   expect(judgeTargets([s], previews, {}, none, NOW).map(x => x.id)).toEqual(['a'])
   expect(judgeTargets([{ ...s, isRunning: true }], previews, {}, none, NOW)).toHaveLength(0)
-  expect(judgeTargets([{ ...s, isSelf: true }], previews, {}, none, NOW)).toHaveLength(0)
+  expect(judgeTargets([{ ...s, isSelf: true }], previews, {}, none, NOW).map(x => x.id)).toEqual(['a'])
   expect(judgeTargets([{ ...s, lastActivityAt: new Date(NOW - 3 * 86_400_000).toISOString() }], previews, {}, none, NOW)).toHaveLength(0)
   expect(judgeTargets([s], { a: { ...previews.a, needsInput: true } }, {}, none, NOW)).toHaveLength(0)
   expect(judgeTargets([s], { a: { ...previews.a, textKey: '' } }, {}, none, NOW)).toHaveLength(0)
@@ -2131,3 +2133,81 @@ test('mergeSessions: a quiet desktop session is dated by its transcript, a runni
   expect(mergeSessions([{ ...row, isRunning: true, lastActivityAt: app }], [local])[0]?.lastActivityAt).toBe(app)
   expect(mergeSessions([{ ...row, lastActivityAt: app }], [{ ...local, transcript: undefined }])[0]?.lastActivityAt).toBe(app)
 })
+
+test('columnsOf: two boards of the same sessions agree on every column and order, whoever is looking', () => {
+  const at = (ago: number) => new Date(NOW - ago).toISOString()
+  const mk = (id: string, ago: number) => ({ id, title: id, cwd: '/x', isRunning: false, isSelf: false, lastActivityAt: at(ago), isRemoteControlled: false })
+  const shared = normalize({ sessions: [mk('a', 1000), mk('b', 2000), mk('c', 3000)], previews: {}, refreshedAt: NOW })
+  const previews = { a: { at: at(1000), needsInput: true, reason: 'asked-question' }, b: { at: at(2000), needsInput: true, reason: 'next-step' }, c: { at: at(3000), needsInput: false } } as never
+  const ids = (me: string) => {
+    const c = columnsOf(viewFor(shared, me), NOW, previews)
+    return [c.running, c.needsMe, c.recent, c.idle].map(l => l.map(s => s.id))
+  }
+  expect(ids('a')).toEqual(ids('b'))
+  expect(ids('a')).toEqual(ids('c'))
+  expect(ids('a')).toEqual(ids('nobody'))
+  expect(ids('a')[1]).toEqual(['a', 'b'])
+})
+
+for (const surface of SURFACES) {
+  test(`${surface}: a board's own session with a question is in Needs me, and the board it publishes says so`, async ($, on) => {
+    mock.clock(on, { now: NOW })
+    const store = fakeStore(on)
+    fakeServer(on, NO_APP)
+    const text = JSON.stringify({ type: 'assistant', timestamp: new Date(NOW - 60_000).toISOString(), entrypoint: 'claude-vscode', message: { content: [{ type: 'text', text: 'All done. Should I push it?' }] } })
+    world = { me: LIVE_VSCODE.sessionId, live: [{ ...LIVE_VSCODE, status: 'idle', statusUpdatedAt: NOW - 60_000, waitingFor: undefined }], projects: { p: { [jsonl(LIVE_VSCODE.sessionId)]: { text, mtimeMs: NOW - 60_000 } } } }
+    const ui = await mountOn(surface)($)
+    await ui.press({ key: 'refresh' })
+    expect((await debugOf($)).myId).toBe(LIVE_VSCODE.sessionId)
+    expect((await ui.find({ key: `needs-${LIVE_VSCODE.sessionId}` }))?.text).toContain('Asks: Should I push it?')
+    const board = store.get('board') as { previews: Record<string, { needsInput?: boolean; question?: string }> }
+    expect(board.previews[LIVE_VSCODE.sessionId]).toMatchObject({ needsInput: true, question: 'Should I push it?' })
+    await ui.unmount()
+  })
+}
+
+for (const surface of SURFACES) {
+  test(`${surface}: this session comes first when it is the most recent, not last`, async ($, on) => {
+    mock.clock(on, { now: NOW })
+    mock.store(on)
+    fakeServer(on, {
+      list_sessions: () => listWith({ [RECENT]: { lastActivityAt: RECENT_AT } }),
+      get_session: args => ok(args.session_id === 'self' ? { ...GET_SESSION_SELF, isRunning: false, lastActivityAt: new Date(Date.parse(RECENT_AT) + 1000).toISOString() } : { ...GET_SESSION_OTHER, sessionId: args.session_id }),
+    })
+    const ui = await mountOn(surface)($)
+    await ui.press({ key: 'refresh' })
+    const keys = (await ui.findAll({ type: 'Box' })).map(b => String(b.props.key)).filter(k => k.startsWith('card-'))
+    expect(keys.indexOf(`card-${SELF}`)).toBeLessThan(keys.indexOf(`card-${RECENT}`))
+    await ui.unmount()
+  })
+
+  test(`${surface}: a follower shows what the board says about it, not its own reading`, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const published = publishedBoard(NOW - 1000)
+    fakeStore(on, { lease: { id: LEADER, until: NOW + 9000, version: '99.0.0' }, board: { ...published, previews: { ...published.previews, [SELF]: { at: iso(NOW - 60_000), text: 'Shared answer', needsInput: true, reason: 'asked-question', question: 'Shared question?', textKey: '' } } } })
+    fakeServer(on)
+    const ui = await mountOn(surface)($)
+    await clock.advance(200)
+    await new Promise(r => setTimeout(r, 50))
+    expect((await debugOf($)).role).toBe('follower')
+    expect((await ui.find({ key: `needs-${SELF}` }))?.text).toContain('Asks: Shared question?')
+    await ui.unmount()
+  })
+
+  test(`${surface}: a desktop session reads its own transcript, which the app's list does not give it`, async ($, on) => {
+    mock.clock(on, { now: NOW })
+    mock.store(on)
+    fakeServer(on, {
+      list_sessions: () => listWith({ [RECENT]: { lastActivityAt: RECENT_AT } }),
+      get_session: args => ok(args.session_id === 'self' ? { ...GET_SESSION_SELF, isRunning: false, lastActivityAt: new Date(NOW - 1000).toISOString() } : { ...GET_SESSION_OTHER, sessionId: args.session_id }),
+    })
+    const spoke = new Date(NOW - 3600_000).toISOString()
+    const text = JSON.stringify({ type: 'assistant', timestamp: spoke, message: { content: [{ type: 'text', text: 'Ready. Should I deploy?' }] } })
+    world = { live: [{ ...LIVE_DESKTOP, hostSessionId: SELF, status: 'idle', statusUpdatedAt: NOW - 1000, waitingFor: undefined }], projects: { p: { [jsonl(LIVE_DESKTOP.sessionId)]: { text, mtimeMs: NOW - 1000 } } } }
+    const ui = await mountOn(surface)($)
+    await ui.press({ key: 'refresh' })
+    expect((await ui.find({ key: `needs-${SELF}` }))?.text).toContain('Asks: Should I deploy?')
+    expect((await ui.find({ key: `ago-${SELF}` }))?.text).toBe('1h ago')
+    await ui.unmount()
+  })
+}

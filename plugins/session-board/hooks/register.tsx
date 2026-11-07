@@ -32,6 +32,7 @@ import {
   JUDGE_SYSTEM,
   judgeTargets,
   type Judged,
+  byActivity,
   mergeSessions,
   nextUsage,
   parseJudgement,
@@ -58,7 +59,7 @@ import {
   type RawSession,
 } from './logic'
 
-const VERSION = '0.23.1'
+const VERSION = '0.24.0'
 const PANE = 'session-board'
 const SERVER = 'ccd_session_mgmt'
 const DEBUG_TOOL = 'board_debug'
@@ -186,13 +187,14 @@ function isAppSession(s: BoardSession): boolean {
 
 async function fetchPreview($: EngineInterface, s: BoardSession, cached: Preview | undefined): Promise<[string, Preview] | null> {
   try {
-    if (s.isSelf) {
+    // The raw transcript is read first where there is one: only it holds the question in a next-step box.
+    // This session reads its own too, or the board it publishes would say it is not waiting for anyone.
+    const path = s.transcript ?? (isAppSession(s) ? transcriptNamedAfter(s.id) : undefined)
+    if (s.isSelf && !path) {
       const rows = await $.session.messages()
       const { task, answer } = summaryFromMessages(rows.slice(-40))
       return [s.id, carryForward({ at: s.lastActivityAt, text: answer, task, needsInput: false, textKey: '' }, cached, s.isRunning)]
     }
-    // The raw transcript is read first where there is one: only it holds the question in a next-step box.
-    const path = s.transcript ?? (isAppSession(s) ? transcriptNamedAfter(s.id) : undefined)
     if (path) {
       const { task, answer, needsInput, reason, question, lastRole, model, finalText } = await previewFromTranscript($, path)
       if (lastRole !== undefined || !appAvailable || !isAppSession(s)) {
@@ -363,7 +365,8 @@ async function refreshOnce($: EngineInterface, force: boolean): Promise<void> {
       const sessions = viewFor(shared, me)
       const own = sessions.find(s => s.isSelf)
       const previews = { ...shared.previews }
-      if (own) {
+      // Only where the leader could not read this session: every board shows the same answer otherwise.
+      if (own && previews[own.id]?.text === undefined) {
         const entry = await fetchPreview($, own, prev.previews[own.id])
         if (entry) previews[entry[0]] = entry[1]
       }
@@ -410,8 +413,10 @@ async function poll($: EngineInterface, refreshedAt: number, prev: BoardSnapshot
   let self: BoardSession | undefined
   if (appAvailable) {
     try {
-      self = toSession((await callJson($, 'get_session', { session_id: 'self' })) as RawSession, true)
-      myId = self.id
+      const own = toSession((await callJson($, 'get_session', { session_id: 'self' })) as RawSession, true)
+      myId = own.id
+      // list_sessions leaves this session out, so it gains its transcript and date here.
+      self = mergeSessions([own], local.filter(l => l.id === own.id))[0] ?? own
     } catch {
       self = undefined
     }
@@ -443,7 +448,7 @@ async function poll($: EngineInterface, refreshedAt: number, prev: BoardSnapshot
     }
   }
 
-  const sessions = self ? [self, ...merged.filter(s => s.id !== self.id)] : merged
+  const sessions = self ? [self, ...merged.filter(s => s.id !== self.id)].sort(byActivity) : merged
   await Promise.all(
     sessions.map(async (s, i) => {
       if (!appAvailable || !isAppSession(s) || !needsDetail(s, refreshedAt)) return
@@ -1001,8 +1006,6 @@ export const register: Register = (on, options) => {
       )
     }
 
-    // This session comes last: you are already looking at it.
-    const selfLast = (list: BoardSession[]) => [...list.filter(s => !s.isSelf), ...list.filter(s => s.isSelf)]
     const column = (title: string, color: string, list: BoardSession[]) =>
       list.length === 0 ? (
         <Box key={`col-${title}`} flexDirection="row" gap="sm" minWidth={20}>
@@ -1016,7 +1019,7 @@ export const register: Register = (on, options) => {
           <Text weight="bold" color={color}>
             {title}
           </Text>
-          {selfLast(list).map(card)}
+          {list.map(card)}
         </Box>
       )
 

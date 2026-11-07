@@ -287,7 +287,7 @@ export function previewTargets(sessions: BoardSession[], previews: Record<string
 // output, so while the last thing in the conversation is still its question, it has not moved on. A message of theirs
 // it has not answered yet is the opposite: that session is starting work.
 function isParkedOnQuestion(s: BoardSession, preview: Preview | undefined, dismissed: Record<string, string>): boolean {
-  return !s.isSelf && preview?.needsInput === true && preview.reason !== 'not-picked-up' && dismissed[s.id] !== s.lastActivityAt
+  return preview?.needsInput === true && preview.reason !== 'not-picked-up' && dismissed[s.id] !== s.lastActivityAt
 }
 
 export function columnsOf(
@@ -302,10 +302,10 @@ export function columnsOf(
   const recent: BoardSession[] = []
   const idle: BoardSession[] = []
   for (const s of sessions) {
-    if (s.waitingFor && !s.isSelf && dismissed[s.id] !== s.lastActivityAt) needsMe.push(s)
+    if (s.waitingFor && dismissed[s.id] !== s.lastActivityAt) needsMe.push(s)
     else if (s.isRunning && !isParkedOnQuestion(s, previews[s.id], dismissed)) running.push(s)
     else if (!isRecent(s, now) || shelved[s.id] === s.lastActivityAt) idle.push(s)
-    else if (!s.isSelf && previews[s.id]?.needsInput && dismissed[s.id] !== s.lastActivityAt) needsMe.push(s)
+    else if (previews[s.id]?.needsInput && dismissed[s.id] !== s.lastActivityAt) needsMe.push(s)
     else recent.push(s)
   }
   return { running, needsMe, recent, idle }
@@ -408,10 +408,9 @@ export function asShared(raw: unknown): BoardSnapshot | undefined {
   return b && Array.isArray(b.sessions) && typeof b.refreshedAt === 'number' ? normalize(b) : undefined
 }
 
-// The published board is perspective-free; each reader marks its own session and puts it first.
+// The published board is perspective-free, and every reader sees the same one: it only marks which card is its own.
 export function viewFor(shared: BoardSnapshot, me: string): BoardSession[] {
-  const marked = shared.sessions.map(s => ({ ...s, isSelf: s.id === me }))
-  return [...marked.filter(s => s.isSelf), ...marked.filter(s => !s.isSelf)]
+  return shared.sessions.map(s => ({ ...s, isSelf: s.id === me }))
 }
 
 // A session another one started (start_session) is drawn inside its parent's card while the parent
@@ -620,7 +619,7 @@ export function mergeSessions(app: BoardSession[] | undefined, local: BoardSessi
   return extras.length ? [...merged, ...extras].sort(byActivity) : merged
 }
 
-function byActivity(a: BoardSession, b: BoardSession): number {
+export function byActivity(a: BoardSession, b: BoardSession): number {
   return (Date.parse(b.lastActivityAt) || 0) - (Date.parse(a.lastActivityAt) || 0)
 }
 
@@ -766,6 +765,6 @@ export function applyJudgement(preview: Preview, judged: Judged | undefined): Pr
 export function judgeTargets(sessions: BoardSession[], previews: Record<string, Preview>, judged: Record<string, Judged>, tried: ReadonlySet<string>, now: number): BoardSession[] {
   return sessions.filter(s => {
     const p = previews[s.id]
-    return !s.isSelf && !s.isRunning && isRecent(s, now) && p?.needsInput === false && !!p.textKey && judged[s.id]?.key !== p.textKey && !tried.has(`${s.id}:${p.textKey}`)
+    return !s.isRunning && isRecent(s, now) && p?.needsInput === false && !!p.textKey && judged[s.id]?.key !== p.textKey && !tried.has(`${s.id}:${p.textKey}`)
   })
 }
