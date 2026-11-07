@@ -47,14 +47,13 @@ If the file already has other hooks, merge this entry in rather than replacing t
 
 ### Use in VS Code
 
-Artifacts can be published from the Claude Code CLI and the desktop app. The [docs](https://code.claude.com/docs/en/artifacts#availability) do not list the VS Code extension's chat panel, so run the CLI in VS Code's integrated terminal:
+Install the skill and the hook as described above, then start a new conversation in the Claude Code panel and run `/ask-log`. You need to be signed in with a claude.ai account, because sessions using an API key cannot publish.
+
+The [docs](https://code.claude.com/docs/en/artifacts#availability) list only the CLI and the desktop app for artifacts, but the extension has published them in practice (v2.1.296). If Claude says it cannot publish, or `/ask-log` is missing from the `/` menu, use the CLI in VS Code's integrated terminal instead:
 
 1. [Install the CLI](https://code.claude.com/docs/en/setup). The extension does not add `claude` to your PATH.
-2. Open the integrated terminal and run `claude`.
-3. Run `/login` and sign in with a claude.ai account. Sessions using an API key cannot publish.
-4. Run `/ask-log`.
-
-Install the skill and the hook first, as described above. If either was added while Claude Code was running, start a new session.
+2. Run `claude` in the integrated terminal.
+3. Run `/login`, then `/ask-log`.
 
 ### Good to know
 
