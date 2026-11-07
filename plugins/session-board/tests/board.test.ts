@@ -1977,9 +1977,9 @@ test('isNewerVersion and shouldLead: the newest code leads, and an old one does 
 })
 
 const JUDGE_LIVE = { ...LIVE_DESKTOP, hostSessionId: RECENT, status: 'idle', waitingFor: undefined }
-const judgeWorld = (text = 'Done. Please review the diff.', mtimeMs = MTIME) => ({
+const judgeWorld = (text = 'Done. Please review the diff.', mtimeMs = MTIME, timestamp = new Date(MTIME).toISOString()) => ({
   live: [JUDGE_LIVE],
-  projects: { p: { [jsonl(LIVE_DESKTOP.sessionId)]: { text: JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } }), mtimeMs } } },
+  projects: { p: { [jsonl(LIVE_DESKTOP.sessionId)]: { text: JSON.stringify({ type: 'assistant', timestamp, message: { content: [{ type: 'text', text }] } }), mtimeMs } } },
 })
 function fakeModel(on: On, answer: () => unknown): { prompts: string[] } {
   const seen = { prompts: [] as string[] }
@@ -2037,7 +2037,7 @@ for (const surface of SURFACES) {
     expect(await ui.find({ key: `needs-${RECENT}` })).toBeUndefined()
 
     answer = { isAnswered: false, reason: 'api-error', status: 500, usage: { input_tokens: 0, output_tokens: 0 } }
-    world = judgeWorld('A different reply. Check the log.', MTIME + 1000)
+    world = judgeWorld('A different reply. Check the log.', MTIME + 1000, new Date(MTIME + 1000).toISOString())
     at = new Date(NOW - 500).toISOString()
     await ui.press({ key: 'refresh' })
     await ui.press({ key: 'refresh' })
