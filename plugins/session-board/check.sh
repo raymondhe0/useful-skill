@@ -4,6 +4,13 @@ set -u
 CLAUDE="${CLAUDE_BIN:-$(command -v claude || ls -d "$HOME/Library/Application Support/Claude/claude-code/"*/*/claude.app/Contents/MacOS/claude | sort -V | tail -1)}"
 DIR="${0:A:h}"
 
+# The board reports and leads by this constant, so it must follow the manifest.
+manifest=$(sed -n 's/.*"version": "\(.*\)".*/\1/p' "$DIR/.claude-plugin/plugin.json" | head -1)
+if ! grep -q "const VERSION = '$manifest'" "$DIR/hooks/register.tsx"; then
+  print "FAIL version: plugin.json says $manifest, register.tsx disagrees"
+  exit 1
+fi
+
 validate=$("$CLAUDE" plugin validate "$DIR" 2>&1)
 if ! print -r -- "$validate" | grep -q "Validation passed"; then
   print -r -- "$validate"

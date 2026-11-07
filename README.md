@@ -88,7 +88,7 @@ The board needs the extension or CLI at 2.1.299 or later to draw its pane. Start
 
 Sessions on this computer, sorted into Running, Needs me, Finished (24h) and Idle, each with its latest reply and your usage so far. Press `?` on the board for the rules.
 
-A session lands in Needs me when it asked you something: in its next-step box, with a question tool, or with a question mark in the last paragraph of its reply. The card shows the question. A request with no question mark, like "please review the diff", is not picked up.
+A session lands in Needs me when it asked you something: in its next-step box, with a question tool, or with a question mark in the last paragraph of its reply. The card shows the question. A request with no question mark, like "please review the diff", is picked up only with the `modelJudge` option on.
 
 | | Desktop app, for its own sessions | Anywhere else |
 |---|---|---|
@@ -100,10 +100,11 @@ A session lands in Needs me when it asked you something: in its next-step box, w
 
 ### Good to know
 
-- **It reads your conversations:** the board reads `~/.claude/sessions/` and the end of each transcript in `~/.claude/projects/`, and keeps previews in the plugin's store in `~/.claude/plugins/`. Nothing is sent anywhere, but previews may include whatever was in your conversations, so check before sharing a screenshot.
+- **It reads your conversations:** the board reads `~/.claude/sessions/` and the end of each transcript in `~/.claude/projects/`, and keeps previews in the plugin's store in `~/.claude/plugins/`. Previews may include whatever was in your conversations, so check before sharing a screenshot.
+- **Model check (off by default):** with `modelJudge` on, the last 1,500 characters of each finished reply that has no question are sent once to Claude Haiku through your own Claude Code sign-in, to decide whether the reply waits for you. It uses a little of your quota and can be wrong; Dismiss clears a wrong card. With it off, nothing is sent anywhere.
 - **A message starts a turn:** a message sent from VS Code or the terminal arrives as one from another session, and the other session starts working on it.
 - **Tested on:** macOS only. It should work on Linux, and probably won't list sessions correctly on Windows.
-- **Settings:** the plugin has two options, opening the board at session start and the refresh interval (3 seconds by default).
+- **Settings:** the plugin has three options: opening the board at session start, the refresh interval (3 seconds by default) and the model check.
 
 ### Develop
 

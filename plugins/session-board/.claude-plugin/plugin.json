@@ -1,6 +1,6 @@
 {
   "name": "session-board",
-  "version": "0.22.1",
+  "version": "0.23.0",
   "description": "Kanban board of Claude Code sessions in the desktop app, VS Code and the terminal: running, needs me, finished, idle",
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -9,6 +9,12 @@
       "description": "Open the session board when a session starts, so it is already there when you switch sessions",
       "default": true,
       "title": "Open the board at session start"
+    },
+    "modelJudge": {
+      "type": "boolean",
+      "title": "Let a model spot requests with no question mark",
+      "description": "Sends the end of each finished reply that has no question to a small model, once, to decide whether it waits for you. Uses a little of your quota. Off by default",
+      "default": false
     },
     "refreshSeconds": {
       "type": "number",

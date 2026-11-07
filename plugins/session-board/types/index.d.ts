@@ -20,10 +20,11 @@ export type BoardSession = {
 
 export type UsageWindow = { label: string; percent: number; resetsIn: string }
 
-export type NeedsReason = 'next-step' | 'awaiting-answer' | 'not-picked-up' | 'asked-question'
+export type NeedsReason = 'next-step' | 'awaiting-answer' | 'not-picked-up' | 'asked-question' | 'model-judged'
 
 // `textAt` is the activity time at which the current `text` was first seen: how old the progress is.
-export type Preview = { at: string; text?: string; textAt?: string; task?: string; needsInput?: boolean; reason?: NeedsReason; question?: string; model?: string }
+// `textKey` names the final reply a model may judge; empty means there is nothing to judge.
+export type Preview = { at: string; text?: string; textAt?: string; task?: string; needsInput?: boolean; reason?: NeedsReason; question?: string; model?: string; textKey?: string }
 
 // A session's Agent-tool helper as its own board reported it.
 export type AgentRow = { id: string; description: string; type: string; status: string; progress?: string; steps?: string[] }

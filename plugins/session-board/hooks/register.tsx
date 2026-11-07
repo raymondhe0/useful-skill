@@ -27,7 +27,15 @@ import {
   labelOf,
   leaseMs,
   matchesFilter,
+  applyJudgement,
+  judgePrompt,
+  JUDGE_SYSTEM,
+  judgeTargets,
+  type Judged,
   mergeSessions,
+  nextUsage,
+  parseJudgement,
+  textKeyOf,
   modelOptions,
   needsDetail,
   nestedIds,
@@ -50,7 +58,7 @@ import {
   type RawSession,
 } from './logic'
 
-const VERSION = '0.22.0'
+const VERSION = '0.23.0'
 const PANE = 'session-board'
 const SERVER = 'ccd_session_mgmt'
 const DEBUG_TOOL = 'board_debug'
@@ -124,6 +132,14 @@ function setCompose($: EngineInterface, id: string, patch: Partial<Compose>): Pr
 let timer: Timer | undefined
 let spinner: Timer | undefined
 let autoOpen = true
+let judgeOn = false
+const JUDGE_MODEL = 'haiku'
+const JUDGE_PER_RUN = 3
+const JUDGED_KEPT = 60
+// Which replies were sent this run, whatever came back: a failure is not paid for twice.
+const judgeTried = new Set<string>()
+const judgeStats = { calls: 0, failed: 0, yes: 0, inputTokens: 0, outputTokens: 0 }
+let judging = false
 let refreshMs = DEFAULT_REFRESH_S * 1000
 
 // One timer advances every in-flight send's spinner frame; it stops itself once none is in flight.
@@ -173,23 +189,59 @@ async function fetchPreview($: EngineInterface, s: BoardSession, cached: Preview
     if (s.isSelf) {
       const rows = await $.session.messages()
       const { task, answer } = summaryFromMessages(rows.slice(-40))
-      return [s.id, carryForward({ at: s.lastActivityAt, text: answer, task, needsInput: false }, cached, s.isRunning)]
+      return [s.id, carryForward({ at: s.lastActivityAt, text: answer, task, needsInput: false, textKey: '' }, cached, s.isRunning)]
     }
     // The raw transcript is read first where there is one: only it holds the question in a next-step box.
     const path = s.transcript ?? (isAppSession(s) ? transcriptNamedAfter(s.id) : undefined)
     if (path) {
-      const { task, answer, needsInput, reason, question, lastRole, model } = await previewFromTranscript($, path)
+      const { task, answer, needsInput, reason, question, lastRole, model, finalText } = await previewFromTranscript($, path)
       if (lastRole !== undefined || !appAvailable || !isAppSession(s)) {
-        return [s.id, carryForward({ at: s.lastActivityAt, text: answer, task, needsInput, reason, ...(question ? { question } : {}), ...(model ? { model } : {}) }, cached, s.isRunning)]
+        return [s.id, carryForward({ at: s.lastActivityAt, text: answer, task, needsInput, reason, textKey: finalText ? textKeyOf(finalText) : '', ...(question ? { question } : {}), ...(model ? { model } : {}) }, cached, s.isRunning)]
       }
     } else if (!appAvailable || !isAppSession(s)) {
-      return [s.id, { at: s.lastActivityAt, needsInput: false }]
+      return [s.id, { at: s.lastActivityAt, needsInput: false, textKey: '' }]
     }
     const events = await callText($, 'list_events', { session_id: s.id, limit: eventLimitFor(s) })
     const { task, answer, needsInput, reason, question } = summaryOf(events)
-    return [s.id, carryForward({ at: s.lastActivityAt, text: answer, task, needsInput, reason, ...(question ? { question } : {}) }, cached, s.isRunning)]
+    return [s.id, carryForward({ at: s.lastActivityAt, text: answer, task, needsInput, reason, textKey: '', ...(question ? { question } : {}) }, cached, s.isRunning)]
   } catch (err) {
-    return isPermanentPreviewError(messageOf(err)) ? [s.id, { at: s.lastActivityAt, needsInput: false }] : null
+    return isPermanentPreviewError(messageOf(err)) ? [s.id, { at: s.lastActivityAt, needsInput: false, textKey: '' }] : null
+  }
+}
+
+function asJudged(raw: unknown): Record<string, Judged> {
+  return raw && typeof raw === 'object' ? (raw as Record<string, Judged>) : {}
+}
+
+// One reply at a time, in the background: a slow answer must not hold the board up. The next poll shows the result.
+async function judgeReplies($: EngineInterface, sessions: BoardSession[], previews: Record<string, Preview>, known: Record<string, Judged>, now: number): Promise<void> {
+  const judged = { ...known }
+  for (const s of judgeTargets(sessions, previews, judged, judgeTried, now).slice(0, JUDGE_PER_RUN)) {
+    const key = previews[s.id]?.textKey ?? ''
+    judgeTried.add(`${s.id}:${key}`)
+    const path = s.transcript ?? (isAppSession(s) ? transcriptNamedAfter(s.id) : undefined)
+    if (!path) continue
+    try {
+      const { finalText } = await previewFromTranscript($, path)
+      if (!finalText || textKeyOf(finalText) !== key) continue // it moved on since the poll
+      judgeStats.calls++
+      const reply = await $.model.complete({ model: JUDGE_MODEL, system: JUDGE_SYSTEM, prompt: judgePrompt(finalText), effort: 'low', maxTokens: 80, timeoutMs: 20_000 })
+      judgeStats.inputTokens += reply.usage?.input_tokens ?? 0
+      judgeStats.outputTokens += reply.usage?.output_tokens ?? 0
+      if (!reply.isAnswered) {
+        judgeStats.failed++
+        continue
+      }
+      const { needs, ask } = parseJudgement(reply.text)
+      if (needs) judgeStats.yes++
+      delete judged[s.id] // re-added last, so the oldest answers are the ones dropped
+      judged[s.id] = { key, needs, ...(ask ? { ask } : {}) }
+      const kept = Object.fromEntries(Object.entries(judged).slice(-JUDGED_KEPT))
+      await $.store.set('judged', kept)
+    } catch (err) {
+      judgeStats.failed++
+      $.ui.log(`session-board: could not judge a reply: ${messageOf(err)}`, { to: 'debug' })
+    }
   }
 }
 
@@ -304,7 +356,7 @@ async function refreshOnce($: EngineInterface, force: boolean): Promise<void> {
   // Who we are matters only when someone holds a lease; the poll below learns it anyway.
   const me = lease ? await selfId($) : myId
 
-  if (me && lease && !shouldLead(lease, me, now, appAvailable)) {
+  if (me && lease && !shouldLead(lease, me, now, appAvailable, VERSION)) {
     const shared = asShared(await storeGet($, 'board'))
     if (shared && now - shared.refreshedAt < leaseMs(refreshMs)) {
       role = 'follower'
@@ -324,7 +376,7 @@ async function refreshOnce($: EngineInterface, force: boolean): Promise<void> {
   await poll($, now, prev)
   if (myId) {
     try {
-      await $.store.set('lease', { id: myId, until: now + leaseMs(refreshMs), ...(appAvailable ? {} : { local: true }) })
+      await $.store.set('lease', { id: myId, until: now + leaseMs(refreshMs), version: VERSION, ...(appAvailable ? {} : { local: true }) })
     } catch {
       // without the lease others may poll too; harmless
     }
@@ -374,7 +426,7 @@ async function poll($: EngineInterface, refreshedAt: number, prev: BoardSnapshot
   if (appAvailable) {
     try {
       const own = await callJson($, 'get_usage', {})
-      usage = usageOf(own)
+      usage = nextUsage(usageOf(own), prev.usage)
       const ownContext = contextPercentOf(own)
       if (self && ownContext !== undefined) context[self.id] = ownContext
     } catch {
@@ -423,6 +475,16 @@ async function poll($: EngineInterface, refreshedAt: number, prev: BoardSnapshot
   }
   for (const entry of fetched) {
     if (entry) previews[entry[0]] = entry[1]
+  }
+  if (judgeOn) {
+    const judged = asJudged(await storeGet($, 'judged'))
+    for (const id of Object.keys(previews)) previews[id] = applyJudgement(previews[id] as Preview, judged[id])
+    if (!judging) {
+      judging = true
+      void judgeReplies($, sessions, previews, judged, refreshedAt).finally(() => {
+        judging = false
+      })
+    }
   }
 
   const next: BoardSnapshot = { sessions, usage, previews, context, refreshedAt, error: null }
@@ -598,6 +660,7 @@ async function debugInfo($: EngineInterface) {
 
   return {
     version: VERSION,
+    judge: { enabled: judgeOn, ...judgeStats },
     hasApp: appAvailable,
     paneOpen: await isPaneOpen($),
     canRunProcess: await canRunProcess($),
@@ -636,6 +699,7 @@ async function debugInfo($: EngineInterface) {
 
 export const register: Register = (on, options) => {
   autoOpen = options.autoOpen !== false
+  judgeOn = options.modelJudge === true
   refreshMs = refreshMsOf(options.refreshSeconds)
 
   on('session.start', async ($, e, next) => {
@@ -763,6 +827,11 @@ export const register: Register = (on, options) => {
                 {s.title}
               </Text>
             </Box>
+            <Box key={`ago-${s.id}`} borderStyle="round" borderColor={color} paddingX="xs" flexShrink={0}>
+              <Text size="footnote" weight="semibold" color={color}>
+                {ago(s.lastActivityAt, now)}
+              </Text>
+            </Box>
             {!canControl && model ? (
               <Box key={`tune-${s.id}`}>
                 <Text size="caption" dimColor>
@@ -786,7 +855,7 @@ export const register: Register = (on, options) => {
           <Box key={`meta-${s.id}`} flexDirection="row" flexWrap="wrap" columnGap="sm" alignItems="center">
             <Text size="caption" dimColor>
               {workspaceOf(s.cwd)}
-              {s.group ? ` · ${s.group}` : ''} · {ago(s.lastActivityAt, now)}
+              {s.group ? ` · ${s.group}` : ''}
               {s.isRemoteControlled ? ' · Remote Control' : ''}
             </Text>
             {context !== undefined ? (
@@ -968,7 +1037,7 @@ export const register: Register = (on, options) => {
             {s.title}
           </Text>
         </Box>
-        <Text dimColor size="caption">
+        <Text key={`ago-${s.id}`} size="caption" weight="semibold">
           {ago(s.lastActivityAt, now)}
         </Text>
         {s.link ? <Button key={`open-${s.id}`} label="Open" plain onPress={() => void openSession($, s)} /> : null}
@@ -1014,7 +1083,7 @@ export const register: Register = (on, options) => {
           <Box key="help-box" flexDirection="column" gap="xs" borderStyle="round" borderColor="subtle" paddingX="sm">
             <Text size="caption">
               <Text weight="semibold" color={COLUMN_COLORS.running}>Running</Text> — working now.{' '}
-              <Text weight="semibold" color={COLUMN_COLORS.needsMe}>Needs me</Text> — it asked you something: in its next-step box, with a question tool, or in the last paragraph of its reply; or it says it is waiting for you, or has not started on your last message.{' '}
+              <Text weight="semibold" color={COLUMN_COLORS.needsMe}>Needs me</Text> — it asked you something: in its next-step box, with a question tool, or in the last paragraph of its reply; or it says it is waiting for you, or has not started on your last message.{judgeOn ? ' A small model also reads replies with no question mark, to catch requests like “please review this”.' : ''}{' '}
               <Text weight="semibold" color={COLUMN_COLORS.recent}>Finished (24h)</Text> — idle, active in the last 24 hours.{' '}
               <Text weight="semibold" color={COLUMN_COLORS.idle}>Idle</Text> — older, or moved there with Move to Idle.
             </Text>
