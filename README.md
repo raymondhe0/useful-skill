@@ -16,7 +16,7 @@ Type this into a Claude Code conversation, in the terminal or in the VS Code pan
 /plugin install ask-log --marketplace raymondhe0/useful-skill
 ```
 
-This needs Claude Code 2.1.275 or later. Nothing needs to be added to `settings.json`, because the plugin brings its own hook. Start a new conversation afterwards.
+This needs Claude Code 2.1.275 or later. Nothing needs to be added to `settings.json`, because the plugin brings its own hook. Start a new conversation afterwards. In VS Code, run **Developer: Reload Window** first, or the command won't appear in the `/` menu (typing it in full still works).
 
 ### Use
 
