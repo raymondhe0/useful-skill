@@ -171,6 +171,11 @@ export async function readLocalSessions($: EngineInterface, now: number): Promis
   return [...liveRows, ...closedRows.filter((s): s is BoardSession => s !== undefined)]
 }
 
+// A desktop session whose process has gone has no session file; its transcript is findable only if it kept the app's id.
+export function transcriptNamedAfter(appId: string): string | undefined {
+  return index.get(appId.slice('local_'.length))?.path
+}
+
 export async function previewFromTranscript($: EngineInterface, path: string) {
   return summaryFromTranscript(await readTail($, path))
 }

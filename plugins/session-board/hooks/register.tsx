@@ -3,7 +3,7 @@ import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import type { AgentRow, BoardSession, BoardSnapshot, Compose, Preview } from '../types'
 import type { Filing } from './logic'
-import { localSelfId, previewFromTranscript, readLocalSessions } from './local'
+import { localSelfId, previewFromTranscript, readLocalSessions, transcriptNamedAfter } from './local'
 import {
   AGENT_REPORT_PREFIX,
   AGENT_STALE_MS,
@@ -50,7 +50,7 @@ import {
   type RawSession,
 } from './logic'
 
-const VERSION = '0.21.1'
+const VERSION = '0.22.0'
 const PANE = 'session-board'
 const SERVER = 'ccd_session_mgmt'
 const DEBUG_TOOL = 'board_debug'
@@ -175,14 +175,19 @@ async function fetchPreview($: EngineInterface, s: BoardSession, cached: Preview
       const { task, answer } = summaryFromMessages(rows.slice(-40))
       return [s.id, carryForward({ at: s.lastActivityAt, text: answer, task, needsInput: false }, cached, s.isRunning)]
     }
-    if (!appAvailable || !isAppSession(s)) {
-      if (!s.transcript) return [s.id, { at: s.lastActivityAt, needsInput: false }]
-      const { task, answer, needsInput, reason, model } = await previewFromTranscript($, s.transcript)
-      return [s.id, carryForward({ at: s.lastActivityAt, text: answer, task, needsInput, reason, ...(model ? { model } : {}) }, cached, s.isRunning)]
+    // The raw transcript is read first where there is one: only it holds the question in a next-step box.
+    const path = s.transcript ?? (isAppSession(s) ? transcriptNamedAfter(s.id) : undefined)
+    if (path) {
+      const { task, answer, needsInput, reason, question, lastRole, model } = await previewFromTranscript($, path)
+      if (lastRole !== undefined || !appAvailable || !isAppSession(s)) {
+        return [s.id, carryForward({ at: s.lastActivityAt, text: answer, task, needsInput, reason, ...(question ? { question } : {}), ...(model ? { model } : {}) }, cached, s.isRunning)]
+      }
+    } else if (!appAvailable || !isAppSession(s)) {
+      return [s.id, { at: s.lastActivityAt, needsInput: false }]
     }
     const events = await callText($, 'list_events', { session_id: s.id, limit: eventLimitFor(s) })
-    const { task, answer, needsInput, reason } = summaryOf(events)
-    return [s.id, carryForward({ at: s.lastActivityAt, text: answer, task, needsInput, reason }, cached, s.isRunning)]
+    const { task, answer, needsInput, reason, question } = summaryOf(events)
+    return [s.id, carryForward({ at: s.lastActivityAt, text: answer, task, needsInput, reason, ...(question ? { question } : {}) }, cached, s.isRunning)]
   } catch (err) {
     return isPermanentPreviewError(messageOf(err)) ? [s.id, { at: s.lastActivityAt, needsInput: false }] : null
   }
@@ -808,7 +813,11 @@ export const register: Register = (on, options) => {
           {columns.needsMe.includes(s) ? (
             <Box key={`needs-${s.id}`} flexDirection="row" flexWrap="wrap" columnGap="sm" alignItems="center">
               <Text size="caption" weight="semibold" color={COLUMN_COLORS.needsMe}>
-                {s.waitingFor ? `Waiting for you: ${s.waitingFor}` : REASON_LABELS[snap.previews[s.id]?.reason ?? 'asked-question']}
+                {snap.previews[s.id]?.question
+                  ? `Asks: ${snap.previews[s.id]?.question}`
+                  : s.waitingFor
+                    ? `Waiting for you: ${s.waitingFor}`
+                    : REASON_LABELS[snap.previews[s.id]?.reason ?? 'asked-question']}
               </Text>
               <Button key={`dismiss-${s.id}`} label="Dismiss" plain variant="secondary" onPress={() => void file($, 'dismissed', s)} />
             </Box>
@@ -1005,12 +1014,12 @@ export const register: Register = (on, options) => {
           <Box key="help-box" flexDirection="column" gap="xs" borderStyle="round" borderColor="subtle" paddingX="sm">
             <Text size="caption">
               <Text weight="semibold" color={COLUMN_COLORS.running}>Running</Text> — working now.{' '}
-              <Text weight="semibold" color={COLUMN_COLORS.needsMe}>Needs me</Text> — it says it is waiting for you, or it is idle and its transcript ends on a question tool, an unanswered message, or a line ending in "?".{' '}
+              <Text weight="semibold" color={COLUMN_COLORS.needsMe}>Needs me</Text> — it asked you something: in its next-step box, with a question tool, or in the last paragraph of its reply; or it says it is waiting for you, or has not started on your last message.{' '}
               <Text weight="semibold" color={COLUMN_COLORS.recent}>Finished (24h)</Text> — idle, active in the last 24 hours.{' '}
               <Text weight="semibold" color={COLUMN_COLORS.idle}>Idle</Text> — older, or moved there with Move to Idle.
             </Text>
             <Text size="caption" dimColor>
-              Click a title to open that session; the two selects next to it change its model and effort. Sub-sessions sit inside the card of the session that started them. Sessions from the desktop app, VS Code and the terminal all appear; Stop and the selects need the desktop app, so they show only there and only for its sessions. A message sent to a session starts a turn in it. A closed session can be opened but not messaged.
+              Click a title to open that session; the two selects next to it change its model and effort. Sub-sessions sit inside the card of the session that started them. Sessions from the desktop app, VS Code and the terminal all appear; Stop and the selects need the desktop app, so they show only there and only for its sessions. A message sent to a session starts a turn in it. A closed session can be opened but not messaged. A request with no question mark, like "please review the diff", does not count.
             </Text>
           </Box>
         ) : null}

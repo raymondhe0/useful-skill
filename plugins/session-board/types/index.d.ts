@@ -20,10 +20,10 @@ export type BoardSession = {
 
 export type UsageWindow = { label: string; percent: number; resetsIn: string }
 
-export type NeedsReason = 'awaiting-answer' | 'not-picked-up' | 'asked-question'
+export type NeedsReason = 'next-step' | 'awaiting-answer' | 'not-picked-up' | 'asked-question'
 
 // `textAt` is the activity time at which the current `text` was first seen: how old the progress is.
-export type Preview = { at: string; text?: string; textAt?: string; task?: string; needsInput?: boolean; reason?: NeedsReason; model?: string }
+export type Preview = { at: string; text?: string; textAt?: string; task?: string; needsInput?: boolean; reason?: NeedsReason; question?: string; model?: string }
 
 // A session's Agent-tool helper as its own board reported it.
 export type AgentRow = { id: string; description: string; type: string; status: string; progress?: string; steps?: string[] }

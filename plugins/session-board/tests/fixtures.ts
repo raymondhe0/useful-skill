@@ -207,3 +207,14 @@ export const TRANSCRIPT_NAMED = [TRANSCRIPT_DONE, line({ type: 'custom-title', c
 export const TRANSCRIPT_DESKTOP = TRANSCRIPT_DONE.replaceAll('claude-vscode', 'claude-desktop')
 export const TRANSCRIPT_SCRIPT = TRANSCRIPT_DONE.replaceAll('claude-vscode', 'sdk-cli')
 export const TRANSCRIPT_TERMINAL = TRANSCRIPT_DONE.replaceAll('claude-vscode', 'cli')
+
+// The turn a desktop session ends on its next-step box: the question is the wrap_up call's `ask`, then a closing text.
+const wrapUp = (input: Record<string, unknown>) => assistant([{ type: 'tool_use', name: 'mcp__ccd_turn__wrap_up', input }])
+export const TRANSCRIPT_NEXT_STEP = [TRANSCRIPT_DONE, wrapUp({ recap: 'done', ask: 'Deploy it to the server?', actions: [{ label: 'Yes' }] }), assistant([{ type: 'text', text: 'All of it passed.' }])].join('\n')
+export const TRANSCRIPT_NEXT_STEP_ANSWERED = [TRANSCRIPT_NEXT_STEP, user('Yes'), assistant([{ type: 'text', text: 'Deployed.' }]), wrapUp({ recap: 'deployed' }), assistant([{ type: 'text', text: 'It is live.' }])].join('\n')
+export const TRANSCRIPT_RECAP_ONLY = [TRANSCRIPT_DONE, wrapUp({ recap: 'done' }), assistant([{ type: 'text', text: 'All of it passed.' }])].join('\n')
+export const TRANSCRIPT_ASK_TOOL = [TRANSCRIPT_DONE, assistant([{ type: 'tool_use', name: 'AskUserQuestion', input: { questions: [{ question: 'Which folder?', options: [] }] } }])].join('\n')
+// Real shape, 2026-11-06: the question, then one more sentence in the same paragraph.
+export const TRANSCRIPT_MID_PARAGRAPH = [TRANSCRIPT_DONE, assistant([{ type: 'text', text: 'First paragraph.\n\nI suggest testing first. Should I do it now? Also tell me the folder.' }])].join('\n')
+export const TRANSCRIPT_EARLIER_QUESTION = [TRANSCRIPT_DONE, assistant([{ type: 'text', text: 'Why did it fail? The disk was full.\n\nI cleaned it up.' }])].join('\n')
+export const TRANSCRIPT_CODE_QUESTION = [TRANSCRIPT_DONE, assistant([{ type: 'text', text: 'Use `x ? y : z` and see https://a.b/c?d=1 for more.' }])].join('\n')

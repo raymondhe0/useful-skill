@@ -31,6 +31,7 @@ import {
   liveToSession,
   mergeSessions,
   plainPreview,
+  questionOf,
   rateLimitsOf,
   shouldLead,
   summaryFromTranscript,
@@ -60,7 +61,14 @@ import {
   LIVE_DERIVED_NAME,
   LIVE_DESKTOP,
   LIVE_VSCODE,
+  TRANSCRIPT_ASK_TOOL,
   TRANSCRIPT_ASKING,
+  TRANSCRIPT_CODE_QUESTION,
+  TRANSCRIPT_EARLIER_QUESTION,
+  TRANSCRIPT_MID_PARAGRAPH,
+  TRANSCRIPT_NEXT_STEP,
+  TRANSCRIPT_NEXT_STEP_ANSWERED,
+  TRANSCRIPT_RECAP_ONLY,
   TRANSCRIPT_DESKTOP,
   TRANSCRIPT_DONE,
   TRANSCRIPT_LOCAL_COMMAND,
@@ -874,7 +882,7 @@ for (const surface of SURFACES) {
     expect(columnOf(ANSWERED)).toBe('recent')
     expect(columnOf(SELF)).toBe('running')
     expect((await ui.find({ key: `needs-${RECENT}` }))?.text).toMatch(/^Message not picked up/)
-    expect((await ui.find({ key: `needs-${ASKING}` }))?.text).toMatch(/^Ended with a question/)
+    expect((await ui.find({ key: `needs-${ASKING}` }))?.text).toMatch(/^Asks: .*要不要我顺手清掉？/)
     expect(await ui.find({ key: `needs-${ANSWERED}` })).toBeUndefined()
     expect((await ui.find({ key: `card-${RECENT}` }))?.props.borderColor).toBe(COLUMN_COLORS.needsMe)
     expect((await ui.find({ key: `card-${ANSWERED}` }))?.props.borderColor).toBe(COLUMN_COLORS.recent)
@@ -1321,7 +1329,7 @@ test('board_debug reports columns, model, usage and preview lengths, never previ
   const text = String((answer as { result?: unknown }).result ?? '')
   const info = JSON.parse(text)
 
-  expect(info.version).toBe('0.21.1')
+  expect(info.version).toBe('0.22.0')
   expect(info.paneOpen).toBe(true)
   expect(info.canRunProcess).toBe(true)
   expect(info.error).toBeNull()
@@ -1756,6 +1764,93 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect((await ui.find({ key: `shelve-${RECENT}` }))?.props.variant).toBe('secondary')
     expect((await ui.find({ key: 'refresh' }))?.props.variant).toBe('secondary')
     expect((await ui.find({ key: `open-${RECENT}` }))?.props.variant).toBeUndefined()
+    await ui.unmount()
+  })
+}
+
+// Needs me: whenever the agent asks for an opinion or a decision (user's definition, 2026-11-06)
+
+test('a question in the next-step box counts, with the question itself, until it is answered', () => {
+  const asked = summaryFromTranscript(TRANSCRIPT_NEXT_STEP)
+  expect(asked.reason).toBe('next-step')
+  expect(asked.needsInput).toBe(true)
+  expect(asked.question).toBe('Deploy it to the server?')
+  expect(asked.answer).toBe('All of it passed.')
+  const answered = summaryFromTranscript(TRANSCRIPT_NEXT_STEP_ANSWERED)
+  expect(answered.needsInput).toBe(false)
+  expect(answered.question).toBeUndefined()
+  // answered, and the turn after it has no box of its own
+  const after = `${TRANSCRIPT_NEXT_STEP}\n{"type":"user","message":{"role":"user","content":"Yes"}}\n{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Deployed."}]}}`
+  expect(summaryFromTranscript(after).needsInput).toBe(false)
+})
+
+test('a next-step box that only recaps is not a question', () => {
+  expect(summaryFromTranscript(TRANSCRIPT_RECAP_ONLY).needsInput).toBe(false)
+})
+
+test('a question tool gives its question', () => {
+  const s = summaryFromTranscript(TRANSCRIPT_ASK_TOOL)
+  expect(s.reason).toBe('awaiting-answer')
+  expect(s.question).toBe('Which folder?')
+})
+
+test('a question anywhere in the last paragraph counts, and is picked out of it', () => {
+  const s = summaryFromTranscript(TRANSCRIPT_MID_PARAGRAPH)
+  expect(s.reason).toBe('asked-question')
+  expect(s.question).toBe('Should I do it now?')
+  expect(summaryFromTranscript(TRANSCRIPT_ASKING).question).toBe('Should I push it?')
+})
+
+test('a question mark earlier in the reply, in code or in a link does not count', () => {
+  expect(summaryFromTranscript(TRANSCRIPT_EARLIER_QUESTION).needsInput).toBe(false)
+  expect(summaryFromTranscript(TRANSCRIPT_CODE_QUESTION).needsInput).toBe(false)
+})
+
+test('questionOf handles Chinese punctuation and has an answer only for a real question', () => {
+  expect(questionOf('我建议先跑测试。要现在做吗？另外，请告诉我比例。')).toBe('要现在做吗？')
+  expect(questionOf('第一段。\n\n没有问题。')).toBeUndefined()
+  expect(summaryOf('[assistant] 改好了。要提交吗？另外记得看日志。').reason).toBe('asked-question')
+  expect(summaryOf('[assistant] 改好了。要提交吗？另外记得看日志。').question).toBe('要提交吗？')
+})
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`${surface}: a desktop session's transcript supplies its next-step question, and the card shows it`, async ($, on) => {
+    mock.clock(on, { now: NOW })
+    mock.store(on)
+    const calls = fakeServer(on, { list_sessions: () => listWith({ [RECENT]: { lastActivityAt: RECENT_AT } }) })
+    world = {
+      live: [{ ...LIVE_DESKTOP, hostSessionId: RECENT, status: 'idle', waitingFor: undefined }],
+      projects: { p: { [jsonl(LIVE_DESKTOP.sessionId)]: { text: TRANSCRIPT_NEXT_STEP, mtimeMs: MTIME } } },
+    }
+    const ui = await mountOn(surface)($)
+    await ui.press({ key: 'refresh' })
+    expect((await ui.find({ key: `needs-${RECENT}` }))?.text).toContain('Asks: Deploy it to the server?')
+    expect(askedOf(calls, 'list_events')).not.toContain(RECENT)
+    await ui.unmount()
+  })
+
+  test(`${surface}: a transcript with nothing readable falls back to the app's events`, async ($, on) => {
+    mock.clock(on, { now: NOW })
+    mock.store(on)
+    const calls = fakeServer(on, { list_sessions: () => listWith({ [RECENT]: { lastActivityAt: RECENT_AT } }) })
+    world = {
+      live: [{ ...LIVE_DESKTOP, hostSessionId: RECENT, status: 'idle', waitingFor: undefined }],
+      projects: { p: { [jsonl(LIVE_DESKTOP.sessionId)]: { text: '', mtimeMs: MTIME } } },
+    }
+    const ui = await mountOn(surface)($)
+    await ui.press({ key: 'refresh' })
+    expect(askedOf(calls, 'list_events')).toContain(RECENT)
+    await ui.unmount()
+  })
+
+  test(`${surface}: a closed desktop session is still read when its transcript has the same name`, async ($, on) => {
+    mock.clock(on, { now: NOW })
+    mock.store(on)
+    fakeServer(on, { list_sessions: () => listWith({ [RECENT]: { lastActivityAt: RECENT_AT } }) })
+    world = { live: [], projects: { p: { [jsonl(RECENT.slice('local_'.length))]: { text: TRANSCRIPT_NEXT_STEP.replaceAll('claude-vscode', 'claude-desktop'), mtimeMs: MTIME } } } }
+    const ui = await mountOn(surface)($)
+    await ui.press({ key: 'refresh' })
+    expect((await ui.find({ key: `needs-${RECENT}` }))?.text).toContain('Asks: Deploy it to the server?')
     await ui.unmount()
   })
 }

@@ -123,12 +123,13 @@ export function usageOf(raw: unknown): UsageWindow[] {
   return out
 }
 
-export type Summary = { task?: string; answer?: string; lastRole?: string; needsInput: boolean; reason?: NeedsReason }
+export type Summary = { task?: string; answer?: string; lastRole?: string; needsInput: boolean; reason?: NeedsReason; question?: string }
 
 // Tools whose call ends the turn and waits for the person: the model asked, or wants the plan approved.
 const WAITING_TOOLS = /^\(called (AskUserQuestion|ExitPlanMode)\)$/
 
 export const REASON_LABELS: Record<NeedsReason, string> = {
+  'next-step': 'Waiting for your decision',
   'awaiting-answer': 'Waiting for your answer',
   'not-picked-up': 'Message not picked up — it may be waiting for your approval there',
   'asked-question': 'Ended with a question',
@@ -142,8 +143,16 @@ export function needsReasonOf(last: { role: string; text: string } | undefined):
   if (last.role !== 'assistant') return undefined
   if (WAITING_TOOLS.test(last.text)) return 'awaiting-answer'
   if (/^\(called [^)]*\)$/.test(last.text)) return undefined
-  const tail = last.text.trim().split('\n').filter(l => l.trim()).at(-1) ?? ''
-  return /[?？]\s*$/.test(tail) ? 'asked-question' : undefined
+  return questionOf(last.text) ? 'asked-question' : undefined
+}
+
+// The last sentence with a question mark in the reply's last paragraph: an ask may be followed by one more remark,
+// but a question earlier in the reply was already answered by the rest of it. Code and links do not ask anything.
+export function questionOf(text: string): string | undefined {
+  const paragraph = text.trim().split(/\n\s*\n/).at(-1) ?? ''
+  const prose = paragraph.replace(/```[\s\S]*?```/g, '').replace(/`[^`]*`/g, 'CODE').replace(/https?:\/\/\S+/g, 'LINK')
+  const asked = prose.match(/[^.。!！?？\n]*[?？]/g)?.at(-1)
+  return asked ? clip(asked) : undefined
 }
 
 // A message another session sent arrives wrapped; show who sent it instead of the tag.
@@ -203,7 +212,8 @@ export function summaryOf(events: string): Summary {
   }
   flush()
   const reason = needsReasonOf(last)
-  return { task: clip(lastTask), answer: clip(lastAnswer), lastRole: last?.role, needsInput: reason !== undefined, reason }
+  const question = reason === 'asked-question' && last ? questionOf(last.text) : undefined
+  return { task: clip(lastTask), answer: clip(lastAnswer), lastRole: last?.role, needsInput: reason !== undefined, reason, ...(question ? { question } : {}) }
 }
 
 export function contextPercentOf(raw: unknown): number | undefined {
@@ -608,7 +618,9 @@ export function transcriptMeta(text: string): TranscriptMeta {
   return { ...(title ? { title } : {}), ...(entrypoint ? { entrypoint } : {}), ...(cwd ? { cwd } : {}) }
 }
 
-type Block = { type?: string; text?: string; name?: string }
+type Block = { type?: string; text?: string; name?: string; input?: { ask?: unknown; questions?: { question?: unknown }[] } }
+
+const NEXT_STEP_TOOL = 'mcp__ccd_turn__wrap_up'
 
 // The same Summary list_events gives, from the raw lines: helpers' lines and injected notes are not the conversation.
 export function summaryFromTranscript(tail: string): Summary & { model?: string } {
@@ -617,6 +629,8 @@ export function summaryFromTranscript(tail: string): Summary & { model?: string 
   let lastPrompt: string | undefined
   let model: string | undefined
   let last: { role: string; text: string } | undefined
+  let nextStep: string | undefined
+  let toolQuestion: string | undefined
   for (const row of transcriptLines(tail)) {
     if (row.type === 'last-prompt') lastPrompt = str(row.lastPrompt) ?? lastPrompt
     if ((row.type !== 'user' && row.type !== 'assistant') || row.isSidechain === true || row.isMeta === true) continue
@@ -630,19 +644,25 @@ export function summaryFromTranscript(tail: string): Summary & { model?: string 
       if (/^<(command-|local-command-|bash-|task-notification|system-reminder)/.test(text)) continue // not something typed to it
       lastTask = unwrapCrossSession(text)
       last = { role: 'user', text }
+      nextStep = undefined
       continue
     }
+    for (const b of blocks) if (b.type === 'tool_use' && b.name === NEXT_STEP_TOOL) nextStep = str(b.input?.ask)
     model = str(message?.model) ?? model
     if (text) {
       lastAnswer = text
       last = { role: 'assistant', text }
     } else {
-      const tool = blocks.find(b => b.type === 'tool_use')?.name
-      if (tool) last = { role: 'assistant', text: `(called ${tool})` }
+      const use = blocks.find(b => b.type === 'tool_use')
+      if (use?.name) {
+        last = { role: 'assistant', text: `(called ${use.name})` }
+        toolQuestion = str(use.input?.questions?.[0]?.question)
+      }
     }
   }
-  const reason = needsReasonOf(last)
-  return { task: clip(lastTask ?? lastPrompt), answer: clip(lastAnswer), lastRole: last?.role, needsInput: reason !== undefined, reason, model }
+  const reason = nextStep !== undefined ? 'next-step' : needsReasonOf(last)
+  const question = reason === 'next-step' ? nextStep : reason === 'awaiting-answer' ? toolQuestion : reason === 'asked-question' && last ? questionOf(last.text) : undefined
+  return { task: clip(lastTask ?? lastPrompt), answer: clip(lastAnswer), lastRole: last?.role, needsInput: reason !== undefined, reason, ...(question ? { question: clip(question) } : {}), model }
 }
 
 // $.session.usage's windows, as the board labels them.

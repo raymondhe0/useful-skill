@@ -71,6 +71,8 @@ The board needs the extension or CLI at 2.1.299 or later to draw its pane. Start
 
 Sessions on this computer, sorted into Running, Needs me, Finished (24h) and Idle, each with its latest reply and your usage so far. Press `?` on the board for the rules.
 
+A session lands in Needs me when it asked you something: in its next-step box, with a question tool, or with a question mark in the last paragraph of its reply. The card shows the question. A request with no question mark, like "please review the diff", is not picked up.
+
 | | Desktop app, for its own sessions | Anywhere else |
 |---|---|---|
 | Status and latest reply | Yes | Yes |
