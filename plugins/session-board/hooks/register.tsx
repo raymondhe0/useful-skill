@@ -58,7 +58,7 @@ import {
   type RawSession,
 } from './logic'
 
-const VERSION = '0.23.0'
+const VERSION = '0.23.1'
 const PANE = 'session-board'
 const SERVER = 'ccd_session_mgmt'
 const DEBUG_TOOL = 'board_debug'

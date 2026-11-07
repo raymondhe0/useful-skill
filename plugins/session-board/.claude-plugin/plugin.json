@@ -1,6 +1,6 @@
 {
   "name": "session-board",
-  "version": "0.23.0",
+  "version": "0.23.1",
   "description": "Kanban board of Claude Code sessions in the desktop app, VS Code and the terminal: running, needs me, finished, idle",
   "types": "./types/index.d.ts",
   "userConfig": {

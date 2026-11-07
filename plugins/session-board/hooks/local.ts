@@ -99,6 +99,24 @@ export async function readTail($: EngineInterface, path: string): Promise<string
   return slice($, 'tail', PREVIEW_TAIL, path)
 }
 
+// Re-read only when the file changed. A tail with no conversation in it (all bookkeeping) keeps the last answer,
+// else falls back on the file's time.
+const conversationCache = new Map<string, { mtimeMs: number; at: number }>()
+
+async function conversationAt($: EngineInterface, t: Transcript): Promise<number> {
+  const cached = conversationCache.get(t.id)
+  if (cached?.mtimeMs === t.mtimeMs) return cached.at
+  let found: number | undefined
+  try {
+    found = lastConversationMs(await readTail($, t.path))
+  } catch {
+    found = undefined
+  }
+  const at = found ?? cached?.at ?? t.mtimeMs
+  conversationCache.set(t.id, { mtimeMs: t.mtimeMs, at })
+  return at
+}
+
 async function metaOf($: EngineInterface, t: Transcript): Promise<TranscriptMeta> {
   const cached = metaCache.get(t.id)
   if (cached && cached.mtimeMs === t.mtimeMs) return cached
@@ -149,14 +167,8 @@ export async function readLocalSessions($: EngineInterface, now: number): Promis
       }
     }
     const meta = transcript ? await metaOf($, transcript) : {}
-    let conversationMs: number | undefined
-    if (f.status === 'waiting' && transcript) {
-      try {
-        conversationMs = lastConversationMs(await readTail($, transcript.path))
-      } catch {
-        conversationMs = undefined
-      }
-    }
+    // A busy session's file changes all the time and it is called active anyway, so it costs no reads.
+    const conversationMs = transcript && f.status !== 'busy' ? await conversationAt($, transcript) : undefined
     return liveToSession(f, displayTitle(f, meta), transcript?.mtimeMs ?? 0, transcript?.path, now, conversationMs)
   })
 
@@ -171,7 +183,7 @@ export async function readLocalSessions($: EngineInterface, now: number): Promis
       cwd: meta.cwd ?? '',
       isRunning: false,
       isSelf: false,
-      lastActivityAt: new Date(t.mtimeMs).toISOString(),
+      lastActivityAt: new Date(await conversationAt($, t)).toISOString(),
       link: linkOf(meta.entrypoint, t.id),
       isRemoteControlled: false,
       transcript: t.path,

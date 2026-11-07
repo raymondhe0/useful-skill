@@ -591,8 +591,8 @@ export function liveToSession(live: LiveFile, title: string, transcriptMs: numbe
     cwd: live.cwd,
     isRunning: live.status === 'busy' || (movedOn && now - conversationMs < STILL_WRITING_MS),
     isSelf: false,
-    // Reopening VS Code rewrites an idle session's status, and that is not activity; its transcript's time is.
-    lastActivityAt: new Date(live.status === 'idle' && transcriptMs > 0 ? transcriptMs : Math.max(live.statusUpdatedAt, transcriptMs)).toISOString(),
+    // Reopening VS Code rewrites an idle session's status and appends to its file; neither is activity.
+    lastActivityAt: new Date(live.status === 'idle' && conversationMs > 0 ? conversationMs : Math.max(live.statusUpdatedAt, live.status === 'busy' ? transcriptMs : conversationMs)).toISOString(),
     link: linkOf(live.entrypoint, live.sessionId, live.hostSessionId),
     isRemoteControlled: false,
     peerId: live.sessionId,
@@ -611,7 +611,9 @@ export function mergeSessions(app: BoardSession[] | undefined, local: BoardSessi
   const merged = app.map(s => {
     const l = byId.get(s.id)
     if (!l) return s
-    return { ...s, ...(l.peerId ? { peerId: l.peerId } : {}), ...(l.transcript ? { transcript: l.transcript } : {}), ...(l.waitingFor ? { waitingFor: l.waitingFor } : {}) }
+    // The app's own time moves with no conversation (seen: 28 hours off), so a quiet session is dated by its transcript.
+    const quiet = l.transcript && !s.isRunning && !l.isRunning ? { lastActivityAt: l.lastActivityAt } : {}
+    return { ...s, ...quiet, ...(l.peerId ? { peerId: l.peerId } : {}), ...(l.transcript ? { transcript: l.transcript } : {}), ...(l.waitingFor ? { waitingFor: l.waitingFor } : {}) }
   })
   // A closed session the app also lists under local_<same id> is one conversation, not two.
   const extras = local.filter(s => !known.has(s.id) && !s.id.startsWith('local_') && !known.has(`local_${s.id}`))
@@ -621,6 +623,8 @@ export function mergeSessions(app: BoardSession[] | undefined, local: BoardSessi
 function byActivity(a: BoardSession, b: BoardSession): number {
   return (Date.parse(b.lastActivityAt) || 0) - (Date.parse(a.lastActivityAt) || 0)
 }
+
+const NOT_TYPED_TO_IT = /^<(command-|local-command-|bash-|task-notification|system-reminder)/
 
 function* transcriptLines(tail: string): Generator<Record<string, unknown>> {
   for (const line of tail.split('\n')) {
@@ -651,11 +655,15 @@ export function transcriptMeta(text: string): TranscriptMeta {
   return { ...(title ? { title } : {}), ...(entrypoint ? { entrypoint } : {}), ...(cwd ? { cwd } : {}) }
 }
 
-// When the last message or tool step was written; undefined if the tail holds none.
+// When the conversation last moved: a message or tool step. Reopening a session writes bookkeeping rows, and running
+// /board or being compacted while idle writes conversation-shaped ones; none of them is the session doing anything.
 export function lastConversationMs(tail: string): number | undefined {
   let at: number | undefined
   for (const row of transcriptLines(tail)) {
-    if ((row.type !== 'user' && row.type !== 'assistant') || row.isSidechain === true) continue
+    if ((row.type !== 'user' && row.type !== 'assistant') || row.isSidechain === true || row.isMeta === true || row.isCompactSummary === true) continue
+    const content = (row.message as { content?: unknown } | undefined)?.content
+    const first = typeof content === 'string' ? content : Array.isArray(content) ? ((content as Block[]).find(b => b.type === 'text')?.text ?? '') : ''
+    if (NOT_TYPED_TO_IT.test(first.trim())) continue
     const ms = Date.parse(str(row.timestamp) ?? '')
     if (ms) at = ms
   }
@@ -685,7 +693,7 @@ export function summaryFromTranscript(tail: string): Summary & { model?: string 
       if (!text) continue // tool results
       const command = /^<command-name>([^<]*)<\/command-name>/.exec(text)?.[1]
       if (command) lastTask = command
-      if (/^<(command-|local-command-|bash-|task-notification|system-reminder)/.test(text)) continue // not something typed to it
+      if (NOT_TYPED_TO_IT.test(text)) continue
       lastTask = unwrapCrossSession(text)
       last = { role: 'user', text }
       nextStep = undefined

@@ -1338,7 +1338,7 @@ test('board_debug reports columns, model, usage and preview lengths, never previ
   const text = String((answer as { result?: unknown }).result ?? '')
   const info = JSON.parse(text)
 
-  expect(info.version).toBe('0.23.0')
+  expect(info.version).toBe('0.23.1')
   expect(info.paneOpen).toBe(true)
   expect(info.canRunProcess).toBe(true)
   expect(info.error).toBeNull()
@@ -1977,9 +1977,9 @@ test('isNewerVersion and shouldLead: the newest code leads, and an old one does 
 })
 
 const JUDGE_LIVE = { ...LIVE_DESKTOP, hostSessionId: RECENT, status: 'idle', waitingFor: undefined }
-const judgeWorld = (text = 'Done. Please review the diff.') => ({
+const judgeWorld = (text = 'Done. Please review the diff.', mtimeMs = MTIME) => ({
   live: [JUDGE_LIVE],
-  projects: { p: { [jsonl(LIVE_DESKTOP.sessionId)]: { text: JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } }), mtimeMs: MTIME } } },
+  projects: { p: { [jsonl(LIVE_DESKTOP.sessionId)]: { text: JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } }), mtimeMs } } },
 })
 function fakeModel(on: On, answer: () => unknown): { prompts: string[] } {
   const seen = { prompts: [] as string[] }
@@ -2037,7 +2037,7 @@ for (const surface of SURFACES) {
     expect(await ui.find({ key: `needs-${RECENT}` })).toBeUndefined()
 
     answer = { isAnswered: false, reason: 'api-error', status: 500, usage: { input_tokens: 0, output_tokens: 0 } }
-    world = judgeWorld('A different reply. Check the log.')
+    world = judgeWorld('A different reply. Check the log.', MTIME + 1000)
     at = new Date(NOW - 500).toISOString()
     await ui.press({ key: 'refresh' })
     await ui.press({ key: 'refresh' })
@@ -2077,3 +2077,57 @@ for (const surface of SURFACES) {
     await ui.unmount()
   })
 }
+
+test('lastConversationMs ignores what is not the session working: injected notes, local commands, compaction', () => {
+  const row = (extra: object, text = 'x') => JSON.stringify({ type: 'user', timestamp: '2026-11-07T06:00:00.000Z', message: { content: text }, ...extra })
+  const real = JSON.stringify({ type: 'assistant', timestamp: '2026-11-07T05:00:00.000Z', message: { content: [{ type: 'text', text: 'done' }] } })
+  const at = Date.parse('2026-11-07T05:00:00.000Z')
+  expect(lastConversationMs([real, row({ isMeta: true })].join('\n'))).toBe(at)
+  expect(lastConversationMs([real, row({ isCompactSummary: true })].join('\n'))).toBe(at)
+  expect(lastConversationMs([real, row({}, '<command-name>/board</command-name>')].join('\n'))).toBe(at)
+  expect(lastConversationMs([real, row({}, '<local-command-stdout>ok</local-command-stdout>')].join('\n'))).toBe(at)
+  expect(lastConversationMs([real, row({}, 'please go on')].join('\n'))).toBe(Date.parse('2026-11-07T06:00:00.000Z'))
+  const toolResult = JSON.stringify({ type: 'user', timestamp: '2026-11-07T07:00:00.000Z', message: { content: [{ type: 'tool_result', content: 'ok' }] } })
+  expect(lastConversationMs([real, toolResult].join('\n'))).toBe(Date.parse('2026-11-07T07:00:00.000Z'))
+})
+
+test('liveToSession: an idle session is dated by its conversation, a busy one by its file', () => {
+  const at = LIVE_VSCODE.statusUpdatedAt
+  const idle = asLiveFile({ ...LIVE_VSCODE, status: 'idle' })!
+  expect(liveToSession(idle, 'x', at + 600_000, '/t', at + 601_000, at - 3_600_000).lastActivityAt).toBe(new Date(at - 3_600_000).toISOString())
+  const busy = asLiveFile({ ...LIVE_VSCODE, status: 'busy' })!
+  expect(liveToSession(busy, 'x', at + 600_000, '/t', at + 601_000).lastActivityAt).toBe(new Date(at + 600_000).toISOString())
+})
+
+for (const surface of SURFACES) {
+  test(`${surface}: reopening a session only touches its file, and the card still shows when it last spoke`, async ($, on) => {
+    mock.clock(on, { now: NOW })
+    mock.store(on)
+    fakeServer(on, NO_APP)
+    const spokeAt = new Date(NOW - 5 * 3600_000).toISOString()
+    const text = [
+      JSON.stringify({ type: 'assistant', timestamp: spokeAt, entrypoint: 'claude-vscode', message: { content: [{ type: 'text', text: 'Finished the work.' }] } }),
+      JSON.stringify({ type: 'cost-state' }),
+      JSON.stringify({ type: 'artifact-comment-monitor' }),
+    ].join('\n')
+    world = { live: [{ ...LIVE_VSCODE, status: 'idle', statusUpdatedAt: NOW - 1000, waitingFor: undefined }], projects: { p: { [jsonl(LIVE_VSCODE.sessionId)]: { text, mtimeMs: NOW - 1000 } } } }
+    const ui = await mountOn(surface)($)
+    await ui.press({ key: 'refresh' })
+    expect((await ui.find({ key: `ago-${LIVE_VSCODE.sessionId}` }))?.text).toBe('5h ago')
+    // and the same once its process has closed
+    world = { live: [], projects: world.projects }
+    await ui.press({ key: 'refresh' })
+    expect((await ui.find({ key: `ago-${LIVE_VSCODE.sessionId}` }))?.text).toBe('5h ago')
+    await ui.unmount()
+  })
+}
+
+test('mergeSessions: a quiet desktop session is dated by its transcript, a running one by the app', () => {
+  const row = { title: 't', cwd: '/x', isRunning: false, isSelf: false, isRemoteControlled: false, id: 'local_a' }
+  const app = new Date(NOW - 1000).toISOString()
+  const spoke = new Date(NOW - 28 * 3600_000).toISOString()
+  const local = { ...row, lastActivityAt: spoke, transcript: '/t' }
+  expect(mergeSessions([{ ...row, lastActivityAt: app }], [local])[0]?.lastActivityAt).toBe(spoke)
+  expect(mergeSessions([{ ...row, isRunning: true, lastActivityAt: app }], [local])[0]?.lastActivityAt).toBe(app)
+  expect(mergeSessions([{ ...row, lastActivityAt: app }], [{ ...local, transcript: undefined }])[0]?.lastActivityAt).toBe(app)
+})
