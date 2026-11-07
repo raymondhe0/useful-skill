@@ -3,7 +3,7 @@
 
 Questions are copied verbatim from the session transcript into a JSON state file;
 Claude supplies the summaries; the Markdown page is always rendered from the state,
-newest question first, as a table.
+newest question first, one section per question.
 
   ask_log.py start  --session SID   create the log (if missing) and turn auto mode on
   ask_log.py append --session SID   add questions not yet in the log, print them as JSON
@@ -19,10 +19,11 @@ import re
 import sys
 from datetime import datetime
 
-HOME = os.path.expanduser("~")
-STATE_DIR = os.path.join(HOME, ".claude", "ask-log")
-PROJECTS_DIR = os.path.join(HOME, ".claude", "projects")
+CONFIG_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+STATE_DIR = os.path.join(CONFIG_DIR, "ask-log")
+PROJECTS_DIR = os.path.join(CONFIG_DIR, "projects")
 SCRIPT = os.path.abspath(__file__)
+SKILL_FILE = os.path.join(os.path.dirname(SCRIPT), "SKILL.md")
 
 # Text blocks the app attaches to a human prompt; they are not part of the question.
 INJECTED_BLOCK_RE = re.compile(r"^\s*<(system-reminder|ide_opened_file|ide_selection)>.*?</\1>\s*", re.S)
@@ -83,7 +84,7 @@ def command_or_text(text, has_origin):
     name = COMMAND_RE.search(stripped)
     if name:
         cmd = name.group(1).strip()
-        if cmd.lstrip("/") == "ask-log":
+        if cmd.lstrip("/").split(":")[-1] == "ask-log":
             return None
         args = COMMAND_ARGS_RE.search(stripped)
         return f"{cmd} {args.group(1).strip()}".strip() if args else cmd
@@ -131,40 +132,35 @@ def local_time(ts, fmt="%Y-%m-%d %H:%M"):
         return ""
 
 
-def cell_verbatim(text):
-    """Table-cell Markdown that renders the text exactly: punctuation escaped, line breaks as <br>."""
+def quote_verbatim(text):
+    """Blockquote that renders the text exactly: punctuation escaped, line breaks and indents kept."""
     lines = []
     for raw in text.strip("\n").split("\n"):
-        esc = "".join("\\" + c if c in MD_ESCAPE else c for c in raw.rstrip())
-        lead = len(esc) - len(esc.lstrip(" "))
-        lines.append(" " * lead + esc[lead:])
-    return "<br>".join(lines)
+        line = raw.rstrip()
+        body = line.lstrip(" ")
+        esc = "".join("\\" + c if c in MD_ESCAPE else c for c in body)
+        lines.append("&nbsp;" * (len(line) - len(body)) + esc)
+    return "\n".join("> " + line + ("  " if line and i < len(lines) - 1 else "") if line else ">"
+                     for i, line in enumerate(lines))
 
 
-def cell_markdown(text):
-    """Table cell for Claude-written Markdown: keep formatting, make it one line."""
-    return " ".join(text.split("\n")).replace("|", "\\|")
-
-
-def bullets_cell(items):
-    return "<br>".join("• " + cell_markdown(i) for i in items)
+def bullet_list(items):
+    """List for Claude-written Markdown: keep formatting, one line per bullet."""
+    return "\n".join("- " + " ".join(i.split("\n")) for i in items)
 
 
 def render(state):
-    rows = []
+    sections = []
     for e in reversed(state["entries"]):
-        summary = bullets_cell(e["summary"]) if e["summary"] else "_Summary pending._"
-        rows.append(f"| Q{e['n']} | {local_time(e['ts'], '%m-%d %H:%M')} | {cell_verbatim(e['question'])} | {summary} |")
-    where = "\n".join(f"- {b}" for b in state["where_i_am"]) or "_Pending._"
+        summary = bullet_list(e["summary"]) if e["summary"] else "_Summary pending._"
+        sections.append(f"### Q{e['n']} · {local_time(e['ts'], '%m-%d %H:%M')}\n\n{quote_verbatim(e['question'])}\n\n{summary}")
     return (
         "# Ask Log\n\n"
         f"Session `{state['session'][:8]}` · started {state['started']} · `{state['project']}` · "
         f"{len(state['entries'])} questions, newest first\n\n"
-        f"## Where I am\n\n{where}\n\n"
+        f"## Where I am\n\n{bullet_list(state['where_i_am']) or '_Pending._'}\n\n"
         "## Questions\n\n"
-        "| # | Time | Question | Summary |\n"
-        "|---|---|---|---|\n"
-        + "\n".join(rows) + "\n"
+        + "\n\n".join(sections) + "\n"
     )
 
 
@@ -256,7 +252,7 @@ def cmd_hook():
         f"closing message, update the log: run `python3 {SCRIPT} append --session {sid}`, then "
         f"pipe the new summaries and the Where I am bullets to `python3 {SCRIPT} fill --session {sid}`, "
         f"then republish {log_path(sid)} as the same artifact. Full steps: "
-        "~/.claude/skills/ask-log/SKILL.md (section Update)."
+        f"{SKILL_FILE} (section Update)."
     )
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
                                              "additionalContext": context}}))

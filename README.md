@@ -1,63 +1,49 @@
 # useful-skill
 
-Personal skills for [Claude Code](https://claude.com/claude-code).
+Personal plugins for [Claude Code](https://claude.com/claude-code).
 
-| Skill | What it does |
+| Plugin | What it does |
 |---|---|
-| [`ask-log`](ask-log/) | Keeps a running log of every question asked in a session, word for word, with a summary of each answer, published as an artifact that updates after every turn. |
+| [`ask-log`](plugins/ask-log/) | Keeps a running log of every question asked in a session, word for word, with a summary of each answer, on a page that updates after every turn. |
 
 ## ask-log
 
 ### Install
 
-```bash
-git clone https://github.com/raymondhe0/useful-skill.git
+Type this into a Claude Code conversation, in the terminal or in the VS Code panel:
+
+```text
+/plugin install ask-log --marketplace raymondhe0/useful-skill
 ```
 
-```bash
-mkdir -p ~/.claude/skills && cp -R useful-skill/ask-log ~/.claude/skills/
-```
-
-Then add this hook to `~/.claude/settings.json`. It is what reminds Claude to update the log each turn, so without it the log only updates when you run `/ask-log` again.
-
-```json
-{
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/skills/ask-log/ask_log.py hook",
-            "timeout": 10
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-If the file already has other hooks, merge this entry in rather than replacing them.
+This needs Claude Code 2.1.275 or later. Nothing needs to be added to `settings.json`, because the plugin brings its own hook. Start a new conversation afterwards.
 
 ### Use
 
-- `/ask-log` starts the log and turns on auto-update for the session. Running it again fills in anything missed.
-- `/ask-log off` stops auto-update. The log stays at the same link.
+- `/ask-log:ask-log` starts the log and turns on auto-update for the conversation. Running it again fills in anything missed.
+- `/ask-log:ask-log off` stops auto-update. The log stays at the same link.
 
-### Use in VS Code
-
-Install the skill and the hook as described above, then start a new conversation in the Claude Code panel and run `/ask-log`. You need to be signed in with a claude.ai account, because sessions using an API key cannot publish.
-
-The [docs](https://code.claude.com/docs/en/artifacts#availability) list only the CLI and the desktop app for artifacts, but the extension has published them in practice (v2.1.296). If Claude says it cannot publish, or `/ask-log` is missing from the `/` menu, use the CLI in VS Code's integrated terminal instead:
-
-1. [Install the CLI](https://code.claude.com/docs/en/setup). The extension does not add `claude` to your PATH.
-2. Run `claude` in the integrated terminal.
-3. Run `/login`, then `/ask-log`.
+Auto-update works per conversation, so run the command in each conversation you want logged.
 
 ### Good to know
 
-- Needs Python 3 (standard library only) and a paid claude.ai plan (Pro, Max, Ultra, Team or Enterprise) to publish the page.
-- The install commands and hook are written for macOS and Linux, and have not been tested on Windows.
-- Summaries are written in Chinese. To change that, edit the language in `ask-log/SKILL.md`.
-- The log is stored in `~/.claude/ask-log/`, one set of files per session.
+- **Secrets:** questions are logged word for word. A password or API key pasted into the conversation ends up in the log and on the page, so check before you share the link. Pages are private until you share them.
+- **Requirements:** Python 3, and a paid claude.ai plan (Pro, Max, Ultra, Team or Enterprise) with a claude.ai sign-in. Sessions using an API key cannot publish.
+- **VS Code:** the [docs](https://code.claude.com/docs/en/artifacts#availability) list only the CLI and the desktop app for artifacts, but publishing has worked in the extension's panel (v2.1.318). If Claude says it cannot publish, [install the CLI](https://code.claude.com/docs/en/setup) and run `claude` in the integrated terminal.
+- **Windows:** not tested.
+- **Language:** summaries are written in Chinese. To change that, edit `plugins/ask-log/skills/ask-log/SKILL.md`.
+- **Storage:** logs are kept in `~/.claude/ask-log/`, one set of files per conversation.
+
+### Update
+
+```text
+/plugin marketplace update useful-skill
+```
+
+### Develop
+
+```bash
+python3 -m pytest tests
+```
+
+The tests need `pytest` and `markdown-it-py`. Raise `version` in `plugins/ask-log/.claude-plugin/plugin.json` with each release, or installed copies will not update.
