@@ -5,6 +5,9 @@ Questions are copied verbatim from the session transcript into a JSON state file
 Claude supplies the summaries; the Markdown page is always rendered from the state,
 newest question first, one section per question.
 
+In the VS Code panel the log is shown as a local file in Markdown preview; everywhere
+else Claude publishes it as an artifact. Every command prints which one as `display`.
+
   ask_log.py start  --session SID   create the log (if missing) and turn auto mode on
   ask_log.py append --session SID   add questions not yet in the log, print them as JSON
   ask_log.py fill   --session SID   read {"where_i_am": [...], "summaries": {"5": [...]}} on stdin
@@ -16,7 +19,10 @@ import glob
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import time
 from datetime import datetime
 
 CONFIG_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
@@ -31,6 +37,177 @@ COMMAND_RE = re.compile(r"<command-name>(.*?)</command-name>", re.S)
 COMMAND_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.S)
 MD_ESCAPE = set("\\`*_{}[]<>()#+-.!|~&")
 ANSWER_LIMIT = 6000
+ASSOCIATIONS_KEY = "workbench.editorAssociations"
+PREVIEW_EDITOR = "vscode.markdown.preview.editor"
+SETTINGS_PICKUP_SECONDS = 4  # 1 s was too short on 1.145; 2 s was enough
+
+
+def display_mode():
+    return "file" if os.environ.get("CLAUDE_CODE_ENTRYPOINT") == "claude-vscode" else "artifact"
+
+
+def preview_glob():
+    """Only the log files open as a preview; every other Markdown file keeps opening as text.
+
+    VS Code does not match an absolute path here (tested on 1.145), so it has to start with **.
+    """
+    parent = os.path.basename(os.path.dirname(STATE_DIR))
+    return f"**/{parent}/{os.path.basename(STATE_DIR)}/*.md"
+
+
+def vscode_settings_path():
+    cache = os.environ.get("VSCODE_CODE_CACHE_PATH")  # <user data>/CachedData/<commit>
+    if cache:
+        return os.path.join(os.path.dirname(os.path.dirname(cache)), "User", "settings.json")
+    home = os.path.expanduser("~")
+    if sys.platform == "darwin":
+        base = os.path.join(home, "Library", "Application Support")
+    elif sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.join(home, "AppData", "Roaming")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
+    return os.path.join(base, "Code", "User", "settings.json")
+
+
+def vscode_cli():
+    """The editor's own CLI: the `code` shell command is often not installed."""
+    try:
+        messages = json.loads(os.environ["VSCODE_NLS_CONFIG"])["defaultMessagesFile"]  # <app>/out/nls.messages.json
+    except (KeyError, TypeError, ValueError):
+        return shutil.which("code")
+    suffix = ".cmd" if sys.platform == "win32" else ""
+    for name in ("code", "code-insiders", "cursor", "windsurf"):
+        cli = os.path.join(os.path.dirname(os.path.dirname(messages)), "bin", name + suffix)
+        if os.path.isfile(cli):
+            return cli
+    return shutil.which("code")
+
+
+def open_in_vscode(path):
+    cli = vscode_cli()
+    if not cli:
+        return False
+    try:
+        return subprocess.run([cli, "--reuse-window", path], capture_output=True, timeout=30).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def strip_jsonc(text):
+    """Blank out comments and trailing commas, keeping every other character at its offset."""
+    out = list(text)
+    i, last_comma = 0, None
+    while i < len(text):
+        if text[i] == '"':
+            i += 1
+            while i < len(text) and text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+            i += 1
+            last_comma = None
+        elif text.startswith(("//", "/*"), i):
+            line = text.startswith("//", i)
+            end = text.find("\n" if line else "*/", i + 2)
+            end = len(text) if end < 0 else end + (0 if line else 2)
+            for j in range(i, end):
+                if text[j] != "\n":
+                    out[j] = " "
+            i = end
+        else:
+            if text[i] in "}]" and last_comma is not None:
+                out[last_comma] = " "
+            if text[i] == ",":
+                last_comma = i
+            elif not text[i].isspace():
+                last_comma = None
+            i += 1
+    return "".join(out)
+
+
+def top_level_object_start(blanked, key):
+    """Offset of the `{` of a top-level key's object value in comment-free JSON, else None."""
+    depth, i = 0, 0
+    while i < len(blanked):
+        c = blanked[i]
+        if c == '"':
+            end = i + 1
+            while blanked[end] != '"':
+                end += 2 if blanked[end] == "\\" else 1
+            after = blanked[end + 1:].lstrip()
+            if depth == 1 and json.loads(blanked[i:end + 1]) == key and after.startswith(":"):
+                return len(blanked) - len(after[1:].lstrip())
+            i = end + 1
+            continue
+        depth += c in "{["
+        depth -= c in "}]"
+        i += 1
+    return None
+
+
+def ensure_preview_setting(path):
+    """Add the log's preview association to a VS Code settings file: "added", "present" or "failed".
+
+    The file may contain comments, so the entry is inserted as text and the result is
+    checked by parsing it. Anything unexpected leaves the file untouched.
+    """
+    pattern = preview_glob()
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except FileNotFoundError:
+        text = ""
+    except (OSError, UnicodeDecodeError):
+        return "failed"
+    blanked = strip_jsonc(text)
+    try:
+        data = json.loads(blanked) if text.strip() else {}
+    except ValueError:
+        return "failed"
+    if not isinstance(data, dict):
+        return "failed"
+    associations = data.get(ASSOCIATIONS_KEY, {})
+    if not isinstance(associations, dict):
+        return "failed"
+    if pattern in associations:
+        return "present"
+
+    entry = f"{json.dumps(pattern)}: {json.dumps(PREVIEW_EDITOR)}"
+    if not text.strip():
+        new = f'{{\n    "{ASSOCIATIONS_KEY}": {{\n        {entry}\n    }}\n}}\n'
+    elif ASSOCIATIONS_KEY in data:
+        at = top_level_object_start(blanked, ASSOCIATIONS_KEY) + 1
+        new = f"{text[:at]}\n        {entry}{',' if associations else ''}{text[at:]}"
+    else:
+        at = blanked.index("{") + 1
+        new = f'{text[:at]}\n    "{ASSOCIATIONS_KEY}": {{\n        {entry}\n    }}{"," if data else ""}{text[at:]}'
+    want = {**data, ASSOCIATIONS_KEY: {**associations, pattern: PREVIEW_EDITOR}}
+    try:
+        if json.loads(strip_jsonc(new)) != want:
+            return "failed"
+    except ValueError:
+        return "failed"
+
+    target = os.path.realpath(path)  # keep a symlinked settings file a symlink
+    backup = path + ".ask-log-backup"
+    try:
+        if text.strip() and not os.path.exists(backup):
+            with open(backup, "w", encoding="utf-8") as f:
+                f.write(text)
+        with open(target + ".ask-log-tmp", "w", encoding="utf-8") as f:
+            f.write(new)
+        os.replace(target + ".ask-log-tmp", target)
+    except OSError:
+        return "failed"
+    return "added"
+
+
+def prepare_vscode_preview(sid):
+    """Open the preview only at the next fill: a write right after the first preview of a
+    window can be missed (tested on 1.145), so the page should already be complete."""
+    setting = ensure_preview_setting(vscode_settings_path())
+    if setting == "added":
+        time.sleep(SETTINGS_PICKUP_SECONDS)  # the editor reads the change asynchronously
+    open(open_pending_path(sid), "w").close()
+    return setting
 
 
 def log_path(sid):
@@ -43,6 +220,10 @@ def state_path(sid):
 
 def flag_path(sid):
     return os.path.join(STATE_DIR, f"{sid}.on")
+
+
+def open_pending_path(sid):
+    return os.path.join(STATE_DIR, f"{sid}.open")
 
 
 def find_transcript(sid):
@@ -192,7 +373,10 @@ def cmd_start(sid):
             "entries": [],
         })
     open(flag_path(sid), "w").close()
-    print(json.dumps({"log": log_path(sid), "created": created, "auto": True}, ensure_ascii=False))
+    result = {"log": log_path(sid), "created": created, "auto": True, "display": display_mode()}
+    if result["display"] == "file":
+        result["preview_setting"] = prepare_vscode_preview(sid)
+    print(json.dumps(result, ensure_ascii=False))
 
 
 def cmd_append(sid):
@@ -212,7 +396,7 @@ def cmd_append(sid):
         report.append({"q": n, "question": t["question"], "answer_so_far": answer})
     save(sid, state)
     pending = [e["n"] for e in state["entries"] if not e["summary"]]
-    print(json.dumps({"log": log_path(sid), "added": report, "pending_summaries": pending},
+    print(json.dumps({"log": log_path(sid), "display": display_mode(), "added": report, "pending_summaries": pending},
                      ensure_ascii=False, indent=1))
 
 
@@ -229,7 +413,11 @@ def cmd_fill(sid):
         state["where_i_am"] = list(data["where_i_am"])
     save(sid, state)
     pending = [e["n"] for e in state["entries"] if not e["summary"]]
-    print(json.dumps({"log": log_path(sid), "pending_summaries": pending}))
+    result = {"log": log_path(sid), "display": display_mode(), "pending_summaries": pending}
+    if result["display"] == "file" and os.path.exists(open_pending_path(sid)):
+        result["opened"] = open_in_vscode(log_path(sid))
+        os.remove(open_pending_path(sid))
+    print(json.dumps(result))
 
 
 def cmd_off(sid):
@@ -247,12 +435,16 @@ def cmd_hook():
         return
     if (data.get("prompt") or "").lstrip().startswith("/ask-log"):
         return
+    finish = (
+        "The open preview refreshes by itself, so there is nothing to publish."
+        if display_mode() == "file"
+        else f"Then republish {log_path(sid)} as the same artifact."
+    )
     context = (
         "ask-log auto mode is on for this session. When this turn's work is done, before the "
         f"closing message, update the log: run `python3 {SCRIPT} append --session {sid}`, then "
-        f"pipe the new summaries and the Where I am bullets to `python3 {SCRIPT} fill --session {sid}`, "
-        f"then republish {log_path(sid)} as the same artifact. Full steps: "
-        f"{SKILL_FILE} (section Update)."
+        f"pipe the new summaries and the Where I am bullets to `python3 {SCRIPT} fill --session {sid}`. "
+        f"{finish} Full steps: {SKILL_FILE} (section Update)."
     )
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
                                              "additionalContext": context}}))

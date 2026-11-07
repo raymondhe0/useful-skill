@@ -4,7 +4,7 @@ Personal plugins for [Claude Code](https://claude.com/claude-code).
 
 | Plugin | What it does |
 |---|---|
-| [`ask-log`](plugins/ask-log/) | Keeps a running log of every question asked in a session, word for word, with a summary of each answer, on a page that updates after every turn. |
+| [`ask-log`](plugins/ask-log/) | Keeps a running log of every question asked in a session, word for word, with a summary of each answer, on a page that updates after every turn: a Markdown preview in the VS Code panel, an artifact elsewhere. |
 | [`session-board`](plugins/session-board/) | A board of your Claude Code sessions across the desktop app, VS Code and the terminal: running, needs me, finished, idle. |
 
 ## ask-log
@@ -26,18 +26,35 @@ This needs Claude Code 2.1.275 or later. Nothing needs to be added to `settings.
 
 Auto-update works per conversation, so run the command in each conversation you want logged.
 
+### Where the log appears
+
+| Where you run it | What you see | Needs |
+|---|---|---|
+| VS Code panel | A local Markdown file, opened as a rendered preview. It refreshes by itself after every turn. | Python 3 |
+| Claude desktop app or terminal | A private artifact page at a link that stays the same. | Python 3, and a paid claude.ai plan (Pro, Max, Ultra, Team or Enterprise) with a claude.ai sign-in. Sessions using an API key cannot publish. |
+
+The first time it runs in the VS Code panel, ask-log adds this to your VS Code user settings, so only log files open as a preview and other Markdown files are unaffected:
+
+```json
+"workbench.editorAssociations": {
+    "**/.claude/ask-log/*.md": "vscode.markdown.preview.editor"
+}
+```
+
+Your previous settings are saved next to the file as `settings.json.ask-log-backup`. If the settings file can't be read safely, it is left alone and the log opens as text; add the lines above yourself, or press Cmd/Ctrl+Shift+V. A VS Code profile other than the default keeps its own settings, so it needs the same lines added by hand. If you close the preview, run `/ask-log:ask-log` again to reopen it.
+
 ### Good to know
 
 - **Secrets:** questions are logged word for word. A password or API key pasted into the conversation ends up in the log and on the page, so check before you share the link. Pages are private until you share them.
-- **Requirements:** Python 3, and a paid claude.ai plan (Pro, Max, Ultra, Team or Enterprise) with a claude.ai sign-in. Sessions using an API key cannot publish.
-- **VS Code:** the [docs](https://code.claude.com/docs/en/artifacts#availability) list only the CLI and the desktop app for artifacts, but publishing has worked in the extension's panel (v2.1.318). If Claude says it cannot publish, [install the CLI](https://code.claude.com/docs/en/setup) and run `claude` in the integrated terminal.
 - **Windows:** not tested.
 - **Language:** summaries are written in Chinese. To change that, edit `plugins/ask-log/skills/ask-log/SKILL.md`.
 - **Storage:** logs are kept in `~/.claude/ask-log/`, one set of files per conversation.
 
 ### Update
 
-Run these in a terminal with the Claude Code CLI, then start a new conversation:
+In the VS Code panel, open **Manage Plugins**, choose **Refresh marketplace** for `useful-skill`, then update `ask-log`. Run **Developer: Reload Window** and start a new conversation.
+
+With the Claude Code CLI, run these, then start a new conversation:
 
 ```bash
 claude plugin marketplace update useful-skill

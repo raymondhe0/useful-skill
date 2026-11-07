@@ -1,6 +1,6 @@
 ---
 name: ask-log
-description: Keep a running log of every question the user asked in this session (verbatim) with a detailed summary of each answer, published as a Markdown artifact that updates after every turn. Use only when the user invokes /ask-log:ask-log (optionally with "off").
+description: Keep a running log of every question the user asked in this session (verbatim) with a detailed summary of each answer, on a page that updates after every turn: a Markdown preview in the VS Code panel, an artifact elsewhere. Use only when the user invokes /ask-log:ask-log (optionally with "off").
 argument-hint: "[off]"
 ---
 
@@ -11,18 +11,20 @@ Session id: `${CLAUDE_SESSION_ID}`
 
 If the session id above is empty or still shows a `${...}` placeholder, take it from the scratchpad directory path in the system prompt (the last path segment, a UUID). Never guess it from the newest transcript file: other sessions run in the same project.
 
-Script: `${CLAUDE_PLUGIN_ROOT}/skills/ask-log/ask_log.py`. The script prints the log file path as `log`.
+Script: `${CLAUDE_PLUGIN_ROOT}/skills/ask-log/ask_log.py`. The script prints the log file path as `log`, and where the log is shown as `display`: `file` in the VS Code panel (a local Markdown preview, no publishing and no claude.ai sign-in needed), `artifact` everywhere else.
 
 ## `/ask-log:ask-log off`
 
-Run `python3 ${CLAUDE_PLUGIN_ROOT}/skills/ask-log/ask_log.py off --session <sid>`. Tell the user auto mode is off, that the log stays at the same artifact link, and that `/ask-log:ask-log` turns it back on and fills in anything missed. Stop.
+Run `python3 ${CLAUDE_PLUGIN_ROOT}/skills/ask-log/ask_log.py off --session <sid>`. Tell the user auto mode is off, that the log stays at the same place (the artifact link, or the file when `display` is `file`), and that `/ask-log:ask-log` turns it back on and fills in anything missed. Stop.
 
 ## `/ask-log:ask-log`
 
 1. Run `python3 ${CLAUDE_PLUGIN_ROOT}/skills/ask-log/ask_log.py start --session <sid>`. It creates the log if missing and turns auto mode on (from now on a hook reminds you every turn).
-2. Load the `artifact-design` skill if it has not been loaded in this session.
+2. If `display` is `artifact`: load the `artifact-design` skill if it has not been loaded in this session. If `display` is `file`, do not load it and do not use the Artifact tool at any point.
 3. Do the **Update** steps below.
-4. Tell the user, in Chinese: the artifact link, that the log now updates after every reply, and that `/ask-log:ask-log off` stops it.
+4. Tell the user, in Chinese, that the log now updates after every reply and that `/ask-log:ask-log off` stops it, plus:
+   - `display` is `artifact`: the artifact link.
+   - `display` is `file`: the `log` path, as a link. The `fill` step opens the preview and prints `opened`; `start` prints `preview_setting`. If `opened` is false, say it could not be opened automatically and that they can open that file themselves. If `preview_setting` is `added`, say one line was added to their VS Code user settings so that only these log files open as a preview, and that a backup is next to the settings file as `settings.json.ask-log-backup`. If `preview_setting` is `failed`, say the settings file could not be changed, so the file opens as text, and that they can add `"workbench.editorAssociations": {"<folder of log>/*.md": "vscode.markdown.preview.editor"}` themselves or press Cmd/Ctrl+Shift+V for a preview.
 
 ## Update
 
@@ -40,7 +42,7 @@ Run this at the end of every turn while auto mode is on (the hook's reminder say
    EOF
    ```
    It saves the state next to the log and re-renders the log: one section per question, newest first. Never edit the `.md` or `.json` by hand; the questions are the user's words and the script escapes them so they render exactly.
-5. Publish the log with the Artifact tool, `file_path` = the `log` path the script printed. This is a Markdown artifact on purpose: this skill instructs a `.md` publish.
+5. If `display` is `file`, stop here: the open preview refreshes by itself. Do not open or edit the file. If `display` is `artifact`, publish the log with the Artifact tool, `file_path` = the `log` path the script printed. This is a Markdown artifact on purpose: this skill instructs a `.md` publish.
    - First publish in this session: add `icon: "list"`, `title: "Ask Log"` and `description: "Every question asked in this session, with a summary of each answer."`.
    - Later publishes: same `file_path`, no `icon`, so the same link updates.
 6. Do not mention the update in the closing message unless it failed. If the script exits with an error, say so in one line and keep answering the user.
