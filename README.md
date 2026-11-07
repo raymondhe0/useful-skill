@@ -36,8 +36,14 @@ Auto-update works per conversation, so run the command in each conversation you 
 
 ### Update
 
-```text
-/plugin marketplace update useful-skill
+Run these in a terminal with the Claude Code CLI, then start a new conversation:
+
+```bash
+claude plugin marketplace update useful-skill
+```
+
+```bash
+claude plugin update ask-log@useful-skill
 ```
 
 ### Develop
