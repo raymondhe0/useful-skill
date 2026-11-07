@@ -157,7 +157,7 @@ def render(state):
     return (
         "# Ask Log\n\n"
         f"Session `{state['session'][:8]}` · started {state['started']} · `{state['project']}` · "
-        f"{len(state['entries'])} questions, newest first\n\n"
+        f"{len(state['entries'])} question{'' if len(state['entries']) == 1 else 's'}, newest first\n\n"
         f"## Where I am\n\n{bullet_list(state['where_i_am']) or '_Pending._'}\n\n"
         "## Questions\n\n"
         + "\n\n".join(sections) + "\n"

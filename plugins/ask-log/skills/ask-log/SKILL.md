@@ -1,10 +1,10 @@
 ---
 name: ask-log
-description: Keep a running log of every question the user asked in this session (verbatim) with a detailed summary of each answer, published as a Markdown artifact that updates after every turn. Use only when the user invokes /ask-log (optionally with "off").
+description: Keep a running log of every question the user asked in this session (verbatim) with a detailed summary of each answer, published as a Markdown artifact that updates after every turn. Use only when the user invokes /ask-log:ask-log (optionally with "off").
 argument-hint: "[off]"
 ---
 
-# /ask-log
+# /ask-log:ask-log
 
 Arguments: `$ARGUMENTS`
 Session id: `${CLAUDE_SESSION_ID}`
@@ -13,16 +13,16 @@ If the session id above is empty or still shows a `${...}` placeholder, take it 
 
 Script: `${CLAUDE_PLUGIN_ROOT}/skills/ask-log/ask_log.py`. The script prints the log file path as `log`.
 
-## `/ask-log off`
+## `/ask-log:ask-log off`
 
-Run `python3 ${CLAUDE_PLUGIN_ROOT}/skills/ask-log/ask_log.py off --session <sid>`. Tell the user auto mode is off, that the log stays at the same artifact link, and that `/ask-log` turns it back on and fills in anything missed. Stop.
+Run `python3 ${CLAUDE_PLUGIN_ROOT}/skills/ask-log/ask_log.py off --session <sid>`. Tell the user auto mode is off, that the log stays at the same artifact link, and that `/ask-log:ask-log` turns it back on and fills in anything missed. Stop.
 
-## `/ask-log`
+## `/ask-log:ask-log`
 
 1. Run `python3 ${CLAUDE_PLUGIN_ROOT}/skills/ask-log/ask_log.py start --session <sid>`. It creates the log if missing and turns auto mode on (from now on a hook reminds you every turn).
 2. Load the `artifact-design` skill if it has not been loaded in this session.
 3. Do the **Update** steps below.
-4. Tell the user, in Chinese: the artifact link, that the log now updates after every reply, and that `/ask-log off` stops it.
+4. Tell the user, in Chinese: the artifact link, that the log now updates after every reply, and that `/ask-log:ask-log off` stops it.
 
 ## Update
 

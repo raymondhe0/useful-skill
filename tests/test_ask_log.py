@@ -92,3 +92,15 @@ def test_full_flow_uses_config_dir(tmp_path):
     assert os.path.abspath(SCRIPT) in context and "SKILL.md" in context and ".claude/skills" not in context
     run(["off", "--session", sid], tmp_path)
     assert run(["hook"], tmp_path, hook_in).stdout == ""
+
+
+def test_skill_text_names_the_plugin_command():
+    skill = open(os.path.join(os.path.dirname(SCRIPT), "SKILL.md"), encoding="utf-8").read()
+    assert not re.search(r"(?<![\w./-])/ask-log(?![\w:/-])", skill)
+    assert "/ask-log:ask-log off" in skill
+
+
+def test_one_question_is_singular():
+    page = ask_log.render(state(entries=state()["entries"][:1]))
+    assert "1 question, newest first" in page
+    assert "2 questions, newest first" in ask_log.render(state())
