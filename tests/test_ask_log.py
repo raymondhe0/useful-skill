@@ -21,25 +21,27 @@ TRICKY = [
     "line one\nline two\n\nafter a blank line",
     "    indented like code\n# not a heading\n- not a list\n> not a quote",
     "中文问题？",
+    "https://github.com/raymondhe0/useful-skill/blob/main/README.md<x>&amp;",
 ]
 
 
+def cells(page):
+    out = MD.render(page)
+    rows = re.findall(r"<tr>(.*?)</tr>", out, re.S)[1:]
+    return [re.findall(r'<td valign="top">(.*?)</td>', r, re.S) for r in rows]
+
+
 def rendered_text(question):
-    out = MD.render(ask_log.quote_verbatim(question))
-    assert out.count("<blockquote>") == 1 and out.count("<p>") == question.strip("\n").count("\n\n") + 1
-    assert not re.search(r"<(h\d|ul|ol|code|em|strong|a|pre|table)\b", out)
-    inner = re.sub(r"[ \n]*</?(blockquote|p)>[ \n]*", "\n", out).strip("\n")
-    inner = re.sub(r"<br />\n?", "\n", inner)
-    return html.unescape(inner).replace(" ", " ")
-
-
-def norm(text):
-    return re.sub(r"\n+", "\n", text)
+    [[asked, _]] = cells(ask_log.render(state(entries=[
+        {"n": 1, "uuid": "a", "ts": "2026-11-06T10:00:00Z", "question": question, "summary": ["x"]}])))
+    body = asked.split("<br>", 1)[1]
+    assert not re.search(r"<(?!br>|wbr>)", body)
+    return html.unescape(body.replace("<wbr>", "").replace("<br>", "\n")).replace("\u00a0", " ")
 
 
 def test_questions_render_verbatim():
     for q in TRICKY:
-        assert norm(rendered_text(q)) == norm(q)
+        assert rendered_text(q) == q.strip("\n")
 
 
 def state(**kw):
@@ -51,16 +53,25 @@ def state(**kw):
     return {**base, **kw}
 
 
-def test_page_has_no_table_and_shows_summaries_as_lists():
-    out = MD.render(ask_log.render(state()))
-    assert "<table" not in out
-    assert "<li>one | two</li>" in out and "<li><code>x</code></li>" in out
-    assert "Summary pending" in out
+def test_questions_and_summaries_sit_side_by_side_in_two_columns():
+    page = ask_log.render(state())
+    rows = cells(page)
+    assert len(rows) == 2 and all(len(r) == 2 for r in rows)
+    assert rows[1][1] == "• one | two<br>• <code>x</code>"
+    assert '<col width="38%"><col width="62%">' in page
+    assert "Summary pending" in rows[0][1]
+    assert "## Where I am" in page and "<li>goal</li>" in MD.render(page)
+    assert "\n\n" not in page[page.index("<table>"):]
+
+
+def test_summary_keeps_code_and_bold_and_escapes_the_rest():
+    assert ask_log.cell_summary(["**结论**：`a<b` & <script>", "two\nlines"]) == \
+        "• <strong>结论</strong>：<code>a&lt;b</code> &amp; &lt;script&gt;<br>• two lines"
 
 
 def test_newest_question_first():
-    page = ask_log.render(state())
-    assert page.index("### Q2") < page.index("### Q1")
+    rows = cells(ask_log.render(state()))
+    assert "Q2" in rows[0][0] and "Q1" in rows[1][0]
 
 
 def test_plugin_command_name_is_not_logged_as_a_question():
@@ -85,7 +96,7 @@ def test_full_flow_uses_config_dir(tmp_path):
     assert json.loads(run(["append", "--session", sid], tmp_path).stdout)["pending_summaries"] == [1]
     run(["fill", "--session", sid], tmp_path, json.dumps({"where_i_am": ["w"], "summaries": {"1": ["s"]}}))
     page = open(log, encoding="utf-8").read()
-    assert "> hello?" in page and "- s" in page
+    assert "<br>hello?</td><td valign=\"top\">• s</td>" in page
 
     hook_in = json.dumps({"session_id": sid, "prompt": "hi"})
     context = json.loads(run(["hook"], tmp_path, hook_in).stdout)["hookSpecificOutput"]["additionalContext"]
@@ -135,7 +146,7 @@ def run_script(tmp_path, entrypoint, extra_env, *args, stdin=None):
     (tmp_path / "config" / "projects" / "p" / "sid1.jsonl").touch()
     env = {k: v for k, v in os.environ.items() if not k.startswith("VSCODE_")}
     env.update(extra_env, CLAUDE_CONFIG_DIR=str(tmp_path / "config"), CLAUDE_CODE_ENTRYPOINT=entrypoint,
-               PATH="/usr/bin:/bin")
+               PATH="/usr/bin:/bin", HOME=str(tmp_path), XDG_CONFIG_HOME=str(tmp_path), APPDATA=str(tmp_path))
     r = subprocess.run([sys.executable, SCRIPT, *args], env=env, input=stdin, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     return r.stdout
@@ -154,8 +165,8 @@ def test_vscode_adds_the_setting_at_start_and_opens_the_finished_page_at_fill(tm
     assert not calls.exists()
     filled = json.loads(run_script(tmp_path, "claude-vscode", env, "fill", "--session", "sid1",
                                    stdin='{"where_i_am": ["x"]}'))
-    assert filled["opened"] is True and out["log"] in calls.read_text()
-    glob_ = "**/config/ask-log/*.md"
+    assert filled["opened"] is True and filled["page"] in calls.read_text()
+    glob_ = "**/config/ask-log/pages/*/*.md"
     assert json.loads(settings.read_text())[OLD_KEY] == {glob_: "vscode.markdown.preview.editor"}
 
 
@@ -276,7 +287,7 @@ def test_setting_follows_a_symlinked_file(tmp_path):
 
 
 def test_preview_glob_cannot_catch_the_plugins_own_files():
-    assert GLOB.startswith("**/") and GLOB.endswith("/ask-log/*.md") and GLOB != "**/ask-log/*.md"
+    assert GLOB.startswith("**/") and GLOB.endswith("/ask-log/pages/*/*.md") and not GLOB.startswith("**/ask-log")
 
 
 def write_transcript(config, sid, *records):
@@ -288,7 +299,8 @@ def write_transcript(config, sid, *records):
 
 
 def run_cmd(config, command, sid, stdin=None, entry="claude-desktop"):
-    env = {**os.environ, "CLAUDE_CONFIG_DIR": str(config), "CLAUDE_CODE_ENTRYPOINT": entry}
+    env = {**os.environ, "CLAUDE_CONFIG_DIR": str(config), "CLAUDE_CODE_ENTRYPOINT": entry,
+           "HOME": str(config), "XDG_CONFIG_HOME": str(config), "APPDATA": str(config)}
     out = subprocess.run([sys.executable, SCRIPT, command, "--session", sid], input=stdin, env=env,
                          capture_output=True, text=True, check=True).stdout
     return json.loads(out)
@@ -311,12 +323,12 @@ def test_a_given_name_beats_a_generated_one_and_the_last_rename_wins(tmp_path):
 
 
 def test_file_name_is_safe_for_any_session_name():
-    assert ask_log.publish_name("abcdef123456", "上传 /ask-log 到 GitHub") == "上传 ask-log 到 GitHub.md"
-    assert ask_log.publish_name("abcdef123456", 'a:b*c?"d<e>|f\\g') == "a b c d e f g.md"
-    assert ask_log.publish_name("abcdef123456", "../../etc") == "etc.md"
-    assert ask_log.publish_name("abcdef123456", "") == "Ask Log abcdef12.md"
-    assert ask_log.publish_name("abcdef123456", "///") == "Ask Log abcdef12.md"
-    assert len(ask_log.publish_name("abcdef123456", "😀" * 200).encode()) <= 255
+    assert ask_log.page_name("abcdef123456", "上传 /ask-log 到 GitHub") == "上传 ask-log 到 GitHub.md"
+    assert ask_log.page_name("abcdef123456", 'a:b*c?"d<e>|f\\g') == "a b c d e f g.md"
+    assert ask_log.page_name("abcdef123456", "../../etc") == "etc.md"
+    assert ask_log.page_name("abcdef123456", "") == "Ask Log abcdef12.md"
+    assert ask_log.page_name("abcdef123456", "///") == "Ask Log abcdef12.md"
+    assert len(ask_log.page_name("abcdef123456", "😀" * 200).encode()) <= 255
 
 
 def test_published_file_follows_a_rename_and_leaves_only_one_copy(tmp_path):
@@ -324,16 +336,16 @@ def test_published_file_follows_a_rename_and_leaves_only_one_copy(tmp_path):
     run_cmd(tmp_path, "start", "s1")
     run_cmd(tmp_path, "append", "s1")
     first = run_cmd(tmp_path, "fill", "s1", '{"where_i_am": ["x"]}')
-    assert os.path.basename(first["publish"]) == "old name.md" and first["artifact_url"] is None
+    assert os.path.basename(first["page"]) == "old name.md" and first["artifact_url"] is None
 
     write_transcript(tmp_path, "s1", custom("new name"))
     run_cmd(tmp_path, "append", "s1")
     url = ask_log.ARTIFACT_URL_PREFIX + "artifact/abc"
     second = run_cmd(tmp_path, "fill", "s1", json.dumps({"artifact_url": url}))
-    assert os.path.basename(second["publish"]) == "new name.md" and second["artifact_url"] == url
-    assert os.listdir(os.path.dirname(second["publish"])) == ["new name.md"]
-    page = open(second["publish"], encoding="utf-8").read()
-    assert page.startswith("# new name\n") and page == open(second["log"], encoding="utf-8").read()
+    assert os.path.basename(second["page"]) == "new name.md" and second["artifact_url"] == url
+    assert os.listdir(os.path.dirname(second["page"])) == ["new name.md"]
+    page = open(second["page"], encoding="utf-8").read()
+    assert page.startswith("# new name\n") and page == open(ask_log_log(tmp_path, "s1"), encoding="utf-8").read()
     assert run_cmd(tmp_path, "fill", "s1", "{}")["artifact_url"] == url
 
 
@@ -343,13 +355,47 @@ def test_a_link_from_elsewhere_is_not_kept(tmp_path):
     assert run_cmd(tmp_path, "fill", "s1", '{"artifact_url": "https://example.com/x"}')["artifact_url"] is None
 
 
-def test_the_vscode_panel_gets_the_name_but_no_publish_file(tmp_path):
+def ask_log_log(config, sid):
+    return config / "ask-log" / f"{sid}.md"
+
+
+def test_the_vscode_file_is_named_after_the_session_and_a_rename_opens_the_new_one(tmp_path):
+    env, _, calls = fake_vscode(tmp_path)
+    write_transcript(tmp_path / "config", "s1", custom("old name"))
+    run = lambda *a, **k: run_script(tmp_path, "claude-vscode", env, *a, "--session", "s1", **k)
+    run("start")
+    run("append")
+    first = json.loads(run("fill", stdin="{}"))
+    assert os.path.basename(first["page"]) == "old name.md" and first["opened"] is True
+    assert "artifact_url" not in first
+
+    run("append")
+    keep = json.loads(run("fill", stdin="{}"))
+    assert keep["page"] == first["page"] and "opened" not in keep
+
+    write_transcript(tmp_path / "config", "s1", custom("new name"))
+    run("append")
+    renamed = json.loads(run("fill", stdin="{}"))
+    assert os.path.basename(renamed["page"]) == "new name.md" and renamed["opened"] is True
+    assert not os.path.exists(first["page"]) and renamed["page"] in calls.read_text()
+    assert open(renamed["page"], encoding="utf-8").read().startswith("# new name\n")
+
+
+def test_an_unchanged_name_keeps_the_same_file_for_the_open_preview(tmp_path):
     write_transcript(tmp_path, "s1", custom("name"))
-    run_cmd(tmp_path, "start", "s1", entry="claude-vscode")
-    out = run_cmd(tmp_path, "fill", "s1", "{}", entry="claude-vscode")
-    assert "publish" not in out and "artifact_url" not in out
-    assert not (tmp_path / "ask-log" / "publish").exists()
-    assert open(out["log"], encoding="utf-8").read().startswith("# name\n")
+    run_cmd(tmp_path, "start", "s1")
+    page = run_cmd(tmp_path, "fill", "s1", "{}")["page"]
+    before = os.stat(page).st_ino
+    run_cmd(tmp_path, "fill", "s1", '{"where_i_am": ["changed"]}')
+    assert os.stat(page).st_ino == before and "changed" in open(page, encoding="utf-8").read()
+
+
+def test_two_sessions_with_the_same_name_keep_separate_files(tmp_path):
+    for sid in ("s1", "s2"):
+        write_transcript(tmp_path, sid, custom("same", sid))
+        run_cmd(tmp_path, "start", sid)
+    a, b = (run_cmd(tmp_path, "fill", sid, "{}")["page"] for sid in ("s1", "s2"))
+    assert a != b and os.path.exists(a) and os.path.exists(b)
 
 
 def test_odd_names_stay_plain_text_in_the_heading():
@@ -359,3 +405,28 @@ def test_odd_names_stay_plain_text_in_the_heading():
 
 def test_a_log_from_before_names_still_renders():
     assert ask_log.render(state()).startswith("# Ask Log\n")
+
+
+def test_a_queued_message_with_an_image_is_logged(tmp_path):
+    folder = tmp_path / "projects" / "demo"
+    folder.mkdir(parents=True)
+    queued = {"type": "attachment", "uuid": "r1", "timestamp": "2026-11-06T10:00:00Z", "attachment": {
+        "type": "queued_command", "commandMode": "prompt", "humanTurn": True, "source_uuid": "q1",
+        "timestamp": "2026-11-06T10:00:00Z",
+        "prompt": [{"type": "image", "source": {}}, {"type": "text", "text": "看这张图"}]}}
+    (folder / "s1.jsonl").write_text(json.dumps(queued, ensure_ascii=False) + "\n", encoding="utf-8")
+    turns = ask_log.read_turns(folder / "s1.jsonl")
+    assert [t["question"] for t in turns] == ["[image]\n\n看这张图"]
+
+
+def test_several_app_blocks_before_a_question_are_all_dropped():
+    text = "<system-reminder>\none\n</system-reminder>\n<system-reminder>two</system-reminder>\n\n\n能改名吗"
+    assert ask_log.strip_injected(text) == "能改名吗"
+    assert ask_log.blocks_text([{"type": "text", "text": "<system-reminder>x</system-reminder>"},
+                                {"type": "text", "text": text}]) == "能改名吗"
+
+
+def test_long_links_get_break_points_but_short_words_do_not():
+    out = ask_log.breakable("see https://github.com/raymondhe0/useful-skill ok")
+    assert out.startswith("see ") and out.endswith(" ok") and out.count("<wbr>") >= 3
+    assert ask_log.breakable("short words only") == "short words only"

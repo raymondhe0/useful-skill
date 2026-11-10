@@ -16,6 +16,7 @@ else Claude publishes it as an artifact. Every command prints which one as `disp
 """
 import argparse
 import glob
+import html
 import json
 import os
 import re
@@ -54,7 +55,7 @@ def preview_glob():
     VS Code does not match an absolute path here (tested on 1.145), so it has to start with **.
     """
     parent = os.path.basename(os.path.dirname(STATE_DIR))
-    return f"**/{parent}/{os.path.basename(STATE_DIR)}/*.md"
+    return f"**/{parent}/{os.path.basename(STATE_DIR)}/pages/*/*.md"
 
 
 def vscode_settings_path():
@@ -235,6 +236,30 @@ def find_transcript(sid):
     return max(hits, key=os.path.getmtime)
 
 
+def strip_injected(text):
+    """Drop every app-added block at the start; several can come one after another."""
+    while True:
+        m = INJECTED_BLOCK_RE.match(text)
+        if not m:
+            return text
+        text = text[m.end():]
+
+
+def blocks_text(content):
+    """A prompt is plain text, or a list of blocks when it carries images."""
+    if not isinstance(content, list):
+        return strip_injected(content or "")
+    parts = []
+    for b in content:
+        if b.get("type") == "text":
+            t = strip_injected(b["text"])
+            if t.strip():
+                parts.append(t)
+        elif b.get("type") == "image":
+            parts.append("[image]")
+    return "\n\n".join(parts)
+
+
 def prompt_text(rec):
     """Return the user's own words for a human prompt record, or None if it is not one."""
     if rec.get("isSidechain") or rec.get("isMeta") or rec.get("isCompactSummary"):
@@ -243,21 +268,9 @@ def prompt_text(rec):
     if origin and origin.get("kind") != "human":
         return None
     content = rec["message"]["content"]
-    if isinstance(content, list):
-        if any(b.get("type") == "tool_result" for b in content):
-            return None
-        parts = []
-        for b in content:
-            if b.get("type") == "text":
-                t = INJECTED_BLOCK_RE.sub("", b["text"])
-                if t.strip():
-                    parts.append(t)
-            elif b.get("type") == "image":
-                parts.append("[image]")
-        text = "\n\n".join(parts)
-    else:
-        text = INJECTED_BLOCK_RE.sub("", content)
-    return command_or_text(text, has_origin=bool(origin))
+    if isinstance(content, list) and any(b.get("type") == "tool_result" for b in content):
+        return None
+    return command_or_text(blocks_text(content), has_origin=bool(origin))
 
 
 def command_or_text(text, has_origin):
@@ -296,7 +309,7 @@ def read_turns(transcript):
             if (att.get("type") == "queued_command" and att.get("commandMode") == "prompt"
                     and not att.get("isMeta")
                     and (att.get("humanTurn") or (att.get("origin") or {}).get("kind") == "human")):
-                question = command_or_text(att.get("prompt") or "", has_origin=True)
+                question = command_or_text(blocks_text(att.get("prompt")), has_origin=True)
             uid, ts = att.get("source_uuid") or rec.get("uuid"), att.get("timestamp") or rec.get("timestamp")
         elif kind == "assistant" and turns and not rec.get("isSidechain"):
             for b in rec["message"].get("content") or []:
@@ -319,15 +332,39 @@ def escape_md(text):
     return "".join("\\" + c if c in MD_ESCAPE else c for c in text)
 
 
-def quote_verbatim(text):
-    """Blockquote that renders the text exactly: punctuation escaped, line breaks and indents kept."""
+WBR_EVERY = 12  # a long link or path must not force its column wider than the set share
+
+
+def breakable(text):
+    """Escaped text with <wbr> inside long runs, so a narrow column can wrap them; copying is unchanged."""
+    out = []
+    for i, part in enumerate(re.split(r"(\S{%d,})" % (WBR_EVERY + 1), text)):
+        chunks = [part[j:j + WBR_EVERY] for j in range(0, len(part), WBR_EVERY)] if i % 2 else [part]
+        out.append("<wbr>".join(html.escape(c, quote=False) for c in chunks))
+    return "".join(out)
+
+
+def cell_verbatim(text):
+    """HTML that shows the user's words exactly: escaped, with line breaks and indents kept."""
     lines = []
     for raw in text.strip("\n").split("\n"):
         line = raw.rstrip()
         body = line.lstrip(" ")
-        lines.append("&nbsp;" * (len(line) - len(body)) + escape_md(body))
-    return "\n".join("> " + line + ("  " if line and i < len(lines) - 1 else "") if line else ">"
-                     for i, line in enumerate(lines))
+        lines.append("&nbsp;" * (len(line) - len(body)) + breakable(body))
+    return "<br>".join(lines)
+
+
+def inline_html(text):
+    """The inline Markdown summaries use, `code` and **bold**, as HTML; everything else is escaped."""
+    out = []
+    for i, part in enumerate(re.split(r"`([^`]*)`", " ".join(text.split()))):
+        part = html.escape(part, quote=False)
+        out.append(f"<code>{part}</code>" if i % 2 else re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", part))
+    return "".join(out)
+
+
+def cell_summary(items):
+    return "<br>".join("• " + inline_html(i) for i in items)
 
 
 def bullet_list(items):
@@ -336,17 +373,23 @@ def bullet_list(items):
 
 
 def render(state):
-    sections = []
+    """The questions are an HTML table so both viewers keep the column widths; a Markdown table
+    gives a long question most of the width. Each row stays on one line: a blank line would end
+    the HTML block."""
+    rows = []
     for e in reversed(state["entries"]):
-        summary = bullet_list(e["summary"]) if e["summary"] else "_Summary pending._"
-        sections.append(f"### Q{e['n']} · {local_time(e['ts'], '%m-%d %H:%M')}\n\n{quote_verbatim(e['question'])}\n\n{summary}")
+        asked = f"<strong>Q{e['n']}</strong> · {local_time(e['ts'], '%m-%d %H:%M')}<br>{cell_verbatim(e['question'])}"
+        summary = cell_summary(e["summary"]) if e["summary"] else "<em>Summary pending.</em>"
+        rows.append(f'<tr><td valign="top">{asked}</td><td valign="top">{summary}</td></tr>')
     return (
         f"# {escape_md(state.get('title') or 'Ask Log')}\n\n"
         f"Ask Log · session `{state['session'][:8]}` · started {state['started']} · `{state['project']}` · "
         f"{len(state['entries'])} question{'' if len(state['entries']) == 1 else 's'}, newest first\n\n"
         f"## Where I am\n\n{bullet_list(state['where_i_am']) or '_Pending._'}\n\n"
         "## Questions\n\n"
-        + "\n\n".join(sections) + "\n"
+        '<table>\n<colgroup><col width="38%"><col width="62%"></colgroup>\n'
+        "<thead><tr><th>You asked</th><th>Summary</th></tr></thead>\n<tbody>\n"
+        + "\n".join(rows) + "\n</tbody>\n</table>\n"
     )
 
 
@@ -382,20 +425,28 @@ def session_title(transcript):
     return " ".join((custom or generated or "").split())
 
 
-def publish_name(sid, title):
-    """A Markdown artifact takes its name from the file, so the file is named after the session."""
+def page_name(sid, title):
+    """A Markdown artifact and a VS Code tab take their name from the file, so it is named after the session."""
     name = " ".join(re.sub(r'[\\/:*?"<>|\x00-\x1f\x7f]', " ", title).split())[:TITLE_MAX_CHARS].strip(" .")
     return (name or f"Ask Log {sid[:8]}") + ".md"
 
 
-def write_publish_copy(sid, state):
-    folder = os.path.join(STATE_DIR, "publish", sid)
-    if os.path.isdir(folder):
-        shutil.rmtree(folder)
-    os.makedirs(folder)
-    path = os.path.join(folder, publish_name(sid, state.get("title") or ""))
+def write_page(sid, state):
+    """Write the page the user sees, one folder per session so equal names can't collide.
+
+    An unchanged name is overwritten in place, or an open preview would lose its file.
+    Returns the path and whether it is new.
+    """
+    folder = os.path.join(STATE_DIR, "pages", sid)
+    os.makedirs(folder, exist_ok=True)
+    name = page_name(sid, state.get("title") or "")
+    path = os.path.join(folder, name)
+    is_new = not os.path.exists(path)
     shutil.copyfile(log_path(sid), path)
-    return path
+    for other in os.listdir(folder):
+        if other != name:
+            os.remove(os.path.join(folder, other))
+    return path, is_new
 
 
 def cmd_start(sid):
@@ -457,12 +508,14 @@ def cmd_fill(sid):
         state["artifact_url"] = data["artifact_url"]
     save(sid, state)
     pending = [e["n"] for e in state["entries"] if not e["summary"]]
-    result = {"log": log_path(sid), "display": display_mode(), "pending_summaries": pending}
-    if result["display"] == "file" and os.path.exists(open_pending_path(sid)):
-        result["opened"] = open_in_vscode(log_path(sid))
-        os.remove(open_pending_path(sid))
-    if result["display"] == "artifact":
-        result["publish"] = write_publish_copy(sid, state)
+    page, is_new = write_page(sid, state)
+    result = {"page": page, "display": display_mode(), "pending_summaries": pending}
+    if result["display"] == "file":
+        if is_new or os.path.exists(open_pending_path(sid)):
+            result["opened"] = open_in_vscode(page)
+        if os.path.exists(open_pending_path(sid)):
+            os.remove(open_pending_path(sid))
+    else:
         result["artifact_url"] = state.get("artifact_url")
     print(json.dumps(result, ensure_ascii=False))
 
@@ -485,7 +538,7 @@ def cmd_hook():
     finish = (
         "The open preview refreshes by itself, so there is nothing to publish."
         if display_mode() == "file"
-        else "Then publish the `publish` path that step prints as the same artifact, passing its `artifact_url` as `url`."
+        else "Then publish the `page` path that step prints as the same artifact, passing its `artifact_url` as `url`."
     )
     context = (
         "ask-log auto mode is on for this session. When this turn's work is done, before the "

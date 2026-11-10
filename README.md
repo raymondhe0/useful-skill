@@ -30,14 +30,14 @@ Auto-update works per conversation, so run the command in each conversation you 
 
 | Where you run it | What you see | Needs |
 |---|---|---|
-| VS Code panel | A local Markdown file, opened as a rendered preview. It refreshes by itself after every turn. | Python 3 |
+| VS Code panel | A local Markdown file named after the conversation, opened as a rendered preview. It refreshes by itself after every turn, and a rename opens the renamed file at the next update. | Python 3 |
 | Claude desktop app or terminal | A private artifact page at a link that stays the same. It is named after the conversation, with `.md` at the end, and follows a rename at the next update. | Python 3, and a paid claude.ai plan (Pro, Max, Ultra, Team or Enterprise) with a claude.ai sign-in. Sessions using an API key cannot publish. |
 
 The first time it runs in the VS Code panel, ask-log adds this to your VS Code user settings, so only log files open as a preview and other Markdown files are unaffected:
 
 ```json
 "workbench.editorAssociations": {
-    "**/.claude/ask-log/*.md": "vscode.markdown.preview.editor"
+    "**/.claude/ask-log/pages/*/*.md": "vscode.markdown.preview.editor"
 }
 ```
 
@@ -48,7 +48,7 @@ Your previous settings are saved next to the file as `settings.json.ask-log-back
 - **Secrets:** questions are logged word for word. A password or API key pasted into the conversation ends up in the log and on the page, so check before you share the link. Pages are private until you share them.
 - **Windows:** not tested.
 - **Language:** summaries are written in Chinese. To change that, edit `plugins/ask-log/skills/ask-log/SKILL.md`.
-- **Storage:** logs are kept in `~/.claude/ask-log/`, one set of files per conversation. In the VS Code panel, the conversation's name is the page's heading; the file and its tab keep the conversation's id.
+- **Storage:** logs are kept in `~/.claude/ask-log/`, one set of files per conversation.
 
 ### Update
 

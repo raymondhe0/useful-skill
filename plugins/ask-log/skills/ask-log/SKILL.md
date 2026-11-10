@@ -11,7 +11,7 @@ Session id: `${CLAUDE_SESSION_ID}`
 
 If the session id above is empty or still shows a `${...}` placeholder, take it from the scratchpad directory path in the system prompt (the last path segment, a UUID). Never guess it from the newest transcript file: other sessions run in the same project.
 
-Script: `${CLAUDE_PLUGIN_ROOT}/skills/ask-log/ask_log.py`. The script prints the log file path as `log`, and where the log is shown as `display`: `file` in the VS Code panel (a local Markdown preview, no publishing and no claude.ai sign-in needed), `artifact` everywhere else.
+Script: `${CLAUDE_PLUGIN_ROOT}/skills/ask-log/ask_log.py`. The `fill` step prints the page, a Markdown file named after the session, as `page`, and every step prints where the log is shown as `display`: `file` in the VS Code panel (a local Markdown preview, no publishing and no claude.ai sign-in needed), `artifact` everywhere else.
 
 ## `/ask-log:ask-log off`
 
@@ -24,7 +24,7 @@ Run `python3 ${CLAUDE_PLUGIN_ROOT}/skills/ask-log/ask_log.py off --session <sid>
 3. Do the **Update** steps below.
 4. Tell the user, in Chinese, that the log now updates after every reply and that `/ask-log:ask-log off` stops it, plus:
    - `display` is `artifact`: the artifact link.
-   - `display` is `file`: the `log` path, as a link. The `fill` step opens the preview and prints `opened`; `start` prints `preview_setting`. If `opened` is false, say it could not be opened automatically and that they can open that file themselves. If `preview_setting` is `added`, say one line was added to their VS Code user settings so that only these log files open as a preview, and that a backup is next to the settings file as `settings.json.ask-log-backup`. If `preview_setting` is `failed`, say the settings file could not be changed, so the file opens as text, and that they can add `"workbench.editorAssociations": {"<folder of log>/*.md": "vscode.markdown.preview.editor"}` themselves or press Cmd/Ctrl+Shift+V for a preview.
+   - `display` is `file`: the `page` path, as a link. The `fill` step opens the preview and prints `opened`; `start` prints `preview_setting`. If `opened` is false, say it could not be opened automatically and that they can open that file themselves. If `preview_setting` is `added`, say one line was added to their VS Code user settings so that only these log files open as a preview, and that a backup is next to the settings file as `settings.json.ask-log-backup`. If `preview_setting` is `failed`, say the settings file could not be changed, so the file opens as text, and that they can add `"workbench.editorAssociations": {"**/.claude/ask-log/pages/*/*.md": "vscode.markdown.preview.editor"}` themselves or press Cmd/Ctrl+Shift+V for a preview.
 
 ## Update
 
@@ -41,8 +41,8 @@ Run this at the end of every turn while auto mode is on (the hook's reminder say
    {"where_i_am": ["...", "..."], "summaries": {"5": ["...", "..."]}}
    EOF
    ```
-   It saves the state next to the log and re-renders the log: one section per question, newest first. Never edit the `.md` or `.json` by hand; the questions are the user's words and the script escapes them so they render exactly.
-5. If `display` is `file`, stop here: the open preview refreshes by itself. Do not open or edit the file. If `display` is `artifact`, publish with the Artifact tool, `file_path` = the `publish` path `fill` printed. It is a copy of the log named after the session, because a Markdown artifact takes its name from the file; this is what makes the artifact's name follow the session's. This is a Markdown artifact on purpose: this skill instructs a `.md` publish.
+   It saves the state next to the log and re-renders the log: a two-column table, your words on the left and the summary on the right, newest first. Each summary bullet becomes one line in its cell, so keep bullets short and use only `code` and **bold** for formatting. Never edit the `.md` or `.json` by hand; the questions are the user's words and the script escapes them so they render exactly.
+5. If `display` is `file`, stop here: the open preview refreshes by itself, and when the session was renamed `fill` opens the renamed file. Do not open or edit the file. If `display` is `artifact`, publish with the Artifact tool, `file_path` = the `page` path `fill` printed. A Markdown artifact takes its name from the file, which is what makes its name follow the session's. This is a Markdown artifact on purpose: this skill instructs a `.md` publish.
    - When `fill` printed an `artifact_url`, or you published this log earlier in this conversation, pass that link as `url`, so a renamed file updates the same page. Add no `icon`.
    - Otherwise this is the first publish: add `icon: "list"` and `description: "Every question asked in this session, with a summary of each answer."`.
    - When `fill` printed `artifact_url: null` and you have the link, add `"artifact_url": "<link>"` to the JSON of your next `fill`, so the script keeps it.
