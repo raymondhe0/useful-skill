@@ -37,6 +37,8 @@ import {
   parseJudgement,
   textKeyOf,
   mergeSessions,
+  modelOptions,
+  modelLabel,
   viewFor,
   nextUsage,
   plainPreview,
@@ -652,9 +654,13 @@ for (const surface of SURFACES) {
       n.props?.key === key ? n : kids(n).reduce<Node | undefined>((hit, c) => hit ?? (typeof c === 'object' && c ? findNode(c, key) : undefined), undefined)
     const head = findNode((await ui.drawn()) as Node, `head-${RECENT}`)
     expect(head).toBeDefined()
-    expect(findNode(head!, `model-${RECENT}`)).toBeDefined()
-    expect(findNode(head!, `effort-${RECENT}`)).toBeDefined()
+    expect(findNode(head!, `tune-${RECENT}`)).toBeDefined()
     expect(findNode(head!, `title-${RECENT}`)).toBeDefined()
+    // opened, the selects sit in the title row too
+    await ui.press({ key: `tune-${RECENT}` })
+    const opened = findNode((await ui.drawn()) as Node, `head-${RECENT}`)
+    expect(findNode(opened!, `model-${RECENT}`)).toBeDefined()
+    expect(findNode(opened!, `effort-${RECENT}`)).toBeDefined()
     expect((await ui.find({ key: `tune-${SELF}` }))?.text).toBe('Opus 5.5 · High')
   })
 
@@ -824,6 +830,10 @@ for (const surface of SURFACES) {
     const ui = await mount($)
     await ui.press({ key: 'refresh' })
 
+    expect(await ui.find({ key: `model-${RECENT}` })).toBeUndefined() // folded until asked
+    expect((await ui.find({ key: `tune-${RECENT}` }))?.props.label).toBe('Opus 5.5 · Medium ▾')
+    await ui.press({ key: `tune-${RECENT}` })
+    await ui.press({ key: `tune-${ANSWERED}` })
     const model = await ui.find({ key: `model-${RECENT}` })
     expect(model?.props.value).toBe('claude-opus-5-5')
     expect((model?.props.options as { value: string }[]).map(o => o.value)).toContain('claude-haiku-5-5')
@@ -848,6 +858,7 @@ for (const surface of SURFACES) {
     fakeServer(on, { set_session_model: () => fail('model "x" is not offered; pick one of claude-opus-5-5, claude-sonnet-5-5') })
     const ui = await mount($)
     await ui.press({ key: 'refresh' })
+    await ui.press({ key: `tune-${RECENT}` })
     await ui.select({ key: `model-${RECENT}`, value: 'claude-haiku-5-5' })
     expect(toasts[0]).toMatch(/^Could not set model: model "x" is not offered/)
   })
@@ -1339,7 +1350,7 @@ test('board_debug reports columns, model, usage and preview lengths, never previ
   const text = String((answer as { result?: unknown }).result ?? '')
   const info = JSON.parse(text)
 
-  expect(info.version).toBe('0.24.0')
+  expect(info.version).toBe('0.25.0')
   expect(info.paneOpen).toBe(true)
   expect(info.canRunProcess).toBe(true)
   expect(info.error).toBeNull()
@@ -1635,6 +1646,8 @@ for (const surface of SURFACES) {
     expect(ids.filter((id: string) => id === RECENT)).toHaveLength(1)
     expect(ids).toContain(VS)
     expect(await ui.find({ key: `stop-${RECENT}` })).toBeDefined()
+    expect(await ui.find({ key: `tune-${RECENT}` })).toBeDefined()
+    await ui.press({ key: `tune-${RECENT}` })
     expect(await ui.find({ key: `model-${RECENT}` })).toBeDefined()
     expect(await ui.find({ key: `stop-${VS}` })).toBeUndefined()
     expect(await ui.find({ key: `model-${VS}` })).toBeUndefined()
@@ -1820,11 +1833,15 @@ for (const surface of SURFACES) {
     await ui.unmount()
   })
 
-  test(`${surface}: housekeeping buttons are marked secondary, Open is not`, async ($, on) => {
+  test(`${surface}: Open is the one primary button, the rest secondary, none drawn plain`, async ($, on) => {
     const ui = await mountBoard($, on)
     expect((await ui.find({ key: `shelve-${RECENT}` }))?.props.variant).toBe('secondary')
     expect((await ui.find({ key: 'refresh' }))?.props.variant).toBe('secondary')
-    expect((await ui.find({ key: `open-${RECENT}` }))?.props.variant).toBeUndefined()
+    expect((await ui.find({ key: 'help' }))?.props.variant).toBe('secondary')
+    expect((await ui.find({ key: `reply-${RECENT}` }))?.props.variant).toBe('secondary')
+    expect((await ui.find({ key: `open-${RECENT}` }))?.props.variant).toBe('primary')
+    const plain = (await ui.findAll({ type: 'Button' })).filter(b => b.props.plain && !String(b.props.key).startsWith('tune-'))
+    expect(plain.map(b => b.props.key)).toEqual([])
     await ui.unmount()
   })
 }
@@ -2065,7 +2082,7 @@ test('nextUsage keeps the last numbers when the endpoint reports none', () => {
 })
 
 for (const surface of SURFACES) {
-  test(`${surface}: every card shows its age once, in its own colored outline beside the title`, async ($, on) => {
+  test(`${surface}: every card shows its age once, on a tinted label beside the title`, async ($, on) => {
     mock.clock(on, { now: NOW })
     mock.store(on)
     fakeServer(on, { list_sessions: () => listWith({ [RECENT]: { lastActivityAt: new Date(NOW - 5 * 60_000).toISOString() } }) })
@@ -2073,7 +2090,8 @@ for (const surface of SURFACES) {
     await ui.press({ key: 'refresh' })
     const chip = await ui.find({ key: `ago-${RECENT}` })
     expect(chip?.text).toBe('5m ago')
-    expect(chip?.props.borderColor).toBeDefined()
+    if (surface === 'terminal') expect(chip?.props.backgroundColor).toBeUndefined()
+    else expect(String(chip?.props.backgroundColor)).toMatch(/^#[0-9a-f]{6}26$/)
     const card = await ui.find({ key: `card-${RECENT}` })
     expect(card?.text.match(/5m ago/g)).toHaveLength(1)
     await ui.unmount()
@@ -2211,3 +2229,14 @@ for (const surface of SURFACES) {
     await ui.unmount()
   })
 }
+
+test('modelLabel names models, including ones newer than the list', () => {
+  expect(modelLabel('claude-opus-5-5')).toBe('Opus 5.5')
+  expect(modelLabel('claude-fable-5-2')).toBe('Fable 5.2')
+  expect(modelLabel('claude-opus-latest')).toBe('claude-opus-latest')
+  expect(modelOptions('claude-fable-5-2')[0]).toEqual({ value: 'claude-fable-5-2', label: 'Fable 5.2' })
+})
+
+test('plainPreview keeps only the name of a link whose path is in angle brackets', () => {
+  expect(plainPreview('文件在：[Ask-log session question log.md](</Users/me/.claude/ask-log/pages/a b.md>)。')).toBe('文件在：Ask-log session question log.md。')
+})

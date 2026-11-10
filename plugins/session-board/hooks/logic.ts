@@ -46,8 +46,16 @@ export const EFFORTS: readonly { value: string; label: string }[] = [
   { value: 'max', label: 'Max' },
 ]
 
+// `claude-fable-5-2` reads as `Fable 5.2`, so a model newer than the list above is still named like the rest.
+export function modelLabel(id: string): string {
+  const known = MODELS.find(m => m.value === id)?.label
+  if (known) return known
+  const m = /^claude-([a-z]+)-(\d+)-(\d+)$/.exec(id)
+  return m ? `${(m[1] ?? '').charAt(0).toUpperCase()}${(m[1] ?? '').slice(1)} ${m[2]}.${m[3]}` : id
+}
+
 export function modelOptions(current: string | undefined) {
-  return current && !MODELS.some(m => m.value === current) ? [{ value: current, label: current }, ...MODELS] : MODELS
+  return current && !MODELS.some(m => m.value === current) ? [{ value: current, label: modelLabel(current) }, ...MODELS] : MODELS
 }
 
 export function labelOf(options: readonly { value: string; label: string }[], value: string | undefined): string {
@@ -182,7 +190,7 @@ export function plainPreview(text: string): string {
       return row ? row.split('|').map(c => c.trim()).join(' · ') : l
     })
     .join('\n')
-    .replace(/\[([^\]]*)\]\([^)\s]*\)/g, '$1')
+    .replace(/\[([^\]]*)\]\((?:<[^>]*>|[^)\s]*)\)/g, '$1')
     .replace(/\*\*|__(?=\S)|(?<=\S)__|`/g, '')
     .replace(/^\s*(#{1,6}\s+|[-*+]\s+|>\s+)/gm, '')
     .replace(/(^|\s)#{1,6}\s+/g, '$1')

@@ -63,6 +63,7 @@ declare module 'claude-code' {
       collapsed: Record<string, boolean>
       agentOpen: Record<string, boolean>
       showHelp: boolean
+      tuneOpen: Record<string, boolean>
     }
   }
 }

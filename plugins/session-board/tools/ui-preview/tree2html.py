@@ -26,7 +26,7 @@ def render(n):
     if t=='Text': return text(n)
     if t=='Button':
         label=p.get('label') or ''.join(render(k) for k in kids(n))
-        cls='sec' if p.get('variant')=='secondary' else 'btn'
+        cls='sec' if p.get('variant')=='secondary' else 'lnk' if p.get('plain') else 'btn'
         return f"<button class={cls}>{label}</button>"
     if t=='Input':
         return f"<div class=inp><span>{html.escape(p.get('placeholder') or '')}</span>"+(f"<button class=btn>{p['submitLabel']}</button>" if p.get('submitLabel') else '')+"</div>"
@@ -43,11 +43,13 @@ def render(n):
     if p.get('flexShrink') is not None: st.append(f"flex-shrink:{p['flexShrink']};min-width:0")
     if p.get('minWidth') is not None: st.append(f"min-width:{p['minWidth']*8}px")
     if p.get('alignItems'): st.append(f"align-items:{p['alignItems']}")
+    if p.get('backgroundColor'): st.append(f"background:{col(p['backgroundColor'])};border-radius:4px")
     if p.get('borderStyle'): st.append(f"border:1px solid {col(p.get('borderColor','#555'))};border-radius:8px")
     return f"<div style='{';'.join(st)}'>"+''.join(render(k) for k in kids(n))+"</div>"
 page="""<!doctype html><meta charset=utf8><title>board</title><style>
 body{margin:0;background:#1e1e1e;color:#ddd;font:13px -apple-system,sans-serif;line-height:1.45}
 .btn{background:#0e639c;color:#fff;border:0;border-radius:4px;padding:2px 8px;font-size:12px}
+.lnk{background:none;border:0;color:#aaa;font-size:12px;padding:2px 4px}
 .sec{background:#3a3d41;color:#ddd;border:0;border-radius:4px;padding:2px 8px;font-size:12px}
 .inp{display:flex;flex-grow:1;border:1px solid #444;border-radius:4px;padding:2px 2px 2px 6px;justify-content:space-between;color:#888}
 .sel{border:1px solid #444;border-radius:4px;padding:0 6px;font-size:12px}

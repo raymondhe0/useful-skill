@@ -34,6 +34,7 @@ import {
   type Judged,
   byActivity,
   mergeSessions,
+  modelLabel,
   nextUsage,
   parseJudgement,
   textKeyOf,
@@ -59,7 +60,7 @@ import {
   type RawSession,
 } from './logic'
 
-const VERSION = '0.24.0'
+const VERSION = '0.25.0'
 const PANE = 'session-board'
 const SERVER = 'ccd_session_mgmt'
 const DEBUG_TOOL = 'board_debug'
@@ -80,6 +81,7 @@ const shelved = atom({ plugin: 'session-board', key: 'shelved' } as const, {} as
 const collapsed = atom({ plugin: 'session-board', key: 'collapsed' } as const, {} as Record<string, boolean>)
 const agentOpen = atom({ plugin: 'session-board', key: 'agentOpen' } as const, {} as Record<string, boolean>)
 const showHelp = atom({ plugin: 'session-board', key: 'showHelp' } as const, false)
+const tuneOpen = atom({ plugin: 'session-board', key: 'tuneOpen' } as const, {} as Record<string, boolean>)
 
 type FilingKind = 'shelved' | 'dismissed'
 
@@ -748,6 +750,8 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button, Input, Select } = $.ui.resolve(e)
+    const isTerminal = e.surface === 'terminal'
+    const isTuneOpen = await read($, tuneOpen)
     const snap = normalize(await read($, snapshot))
     const hasApp = snap.hasApp !== false
     const isAllIdle = await read($, showAllIdle)
@@ -832,7 +836,8 @@ export const register: Register = (on, options) => {
                 {s.title}
               </Text>
             </Box>
-            <Box key={`ago-${s.id}`} borderStyle="round" borderColor={color} paddingX="xs" flexShrink={0}>
+            {/* A tint under colored text; a terminal has no translucency, so there the color alone marks it. */}
+            <Box key={`ago-${s.id}`} flexShrink={0} {...(isTerminal ? {} : { backgroundColor: `${color}26`, paddingX: 'xs' as const })}>
               <Text size="footnote" weight="semibold" color={color}>
                 {ago(s.lastActivityAt, now)}
               </Text>
@@ -840,12 +845,21 @@ export const register: Register = (on, options) => {
             {!canControl && model ? (
               <Box key={`tune-${s.id}`}>
                 <Text size="caption" dimColor>
-                  {labelOf(modelOptions(model), model)}
+                  {modelLabel(model)}
                   {s.effort ? ` · ${labelOf(EFFORTS, s.effort)}` : ''}
                 </Text>
               </Box>
             ) : null}
             {canControl && s.model ? (
+              <Button
+                key={`tune-${s.id}`}
+                label={`${modelLabel(s.model)}${s.effort ? ` · ${labelOf(EFFORTS, s.effort)}` : ''} ${isTuneOpen[s.id] ? '▴' : '▾'}`}
+                plain
+                dimColor
+                onPress={() => void update($, tuneOpen, all => ({ ...all, [s.id]: !all[s.id] }))}
+              />
+            ) : null}
+            {canControl && s.model && isTuneOpen[s.id] ? (
               <Select
                 key={`model-${s.id}`}
                 options={modelOptions(s.model)}
@@ -853,7 +867,7 @@ export const register: Register = (on, options) => {
                 onSelect={value => void tune($, s, 'model', value)}
               />
             ) : null}
-            {canControl && s.model ? (
+            {canControl && s.model && isTuneOpen[s.id] ? (
               <Select key={`effort-${s.id}`} options={EFFORTS} value={s.effort} onSelect={value => void tune($, s, 'effort', value)} />
             ) : null}
           </Box>
@@ -871,18 +885,17 @@ export const register: Register = (on, options) => {
               </Box>
             ) : null}
             <Box key={`spacer-${s.id}`} flexGrow={1} />
-            {!s.isSelf && s.link ? <Button key={`open-${s.id}`} label="Open" plain onPress={() => void openSession($, s)} /> : null}
+            {!s.isSelf && s.link ? <Button key={`open-${s.id}`} label="Open" variant="primary" onPress={() => void openSession($, s)} /> : null}
             {canMessage ? (
               <Button
                 key={`reply-${s.id}`}
                 label={isBoxOpen ? 'Hide reply' : 'Reply'}
-                plain
                 variant="secondary"
                 onPress={() => void setCompose($, s.id, { isClosed: isBoxOpen })}
               />
             ) : null}
-            {canControl && s.isRunning ? <Button key={`stop-${s.id}`} label="Stop" plain variant="secondary" onPress={() => void stop($, s)} /> : null}
-            {!s.isSelf && !s.isRunning ? <Button key={`shelve-${s.id}`} label="Move to Idle" plain variant="secondary" onPress={() => void shelve($, s)} /> : null}
+            {canControl && s.isRunning ? <Button key={`stop-${s.id}`} label="Stop" variant="secondary" onPress={() => void stop($, s)} /> : null}
+            {!s.isSelf && !s.isRunning ? <Button key={`shelve-${s.id}`} label="Move to Idle" variant="secondary" onPress={() => void shelve($, s)} /> : null}
           </Box>
           {columns.needsMe.includes(s) ? (
             <Box key={`needs-${s.id}`} flexDirection="row" flexWrap="wrap" columnGap="sm" alignItems="center">
@@ -893,7 +906,7 @@ export const register: Register = (on, options) => {
                     ? `Waiting for you: ${s.waitingFor}`
                     : REASON_LABELS[snap.previews[s.id]?.reason ?? 'asked-question']}
               </Text>
-              <Button key={`dismiss-${s.id}`} label="Dismiss" plain variant="secondary" onPress={() => void file($, 'dismissed', s)} />
+              <Button key={`dismiss-${s.id}`} label="Dismiss" variant="secondary" onPress={() => void file($, 'dismissed', s)} />
             </Box>
           ) : null}
           {task ? (
@@ -1043,7 +1056,7 @@ export const register: Register = (on, options) => {
         <Text key={`ago-${s.id}`} size="caption" weight="semibold">
           {ago(s.lastActivityAt, now)}
         </Text>
-        {s.link ? <Button key={`open-${s.id}`} label="Open" plain onPress={() => void openSession($, s)} /> : null}
+        {s.link ? <Button key={`open-${s.id}`} label="Open" variant="primary" onPress={() => void openSession($, s)} /> : null}
       </Box>
     )
 
@@ -1064,7 +1077,7 @@ export const register: Register = (on, options) => {
             {now ? `Updated ${new Date(now).toLocaleTimeString()}` : 'Loading…'}
           </Text>
           <Button key="refresh" label="Refresh" variant="secondary" onPress={() => void refresh($, true)} />
-          <Button key="help" label="?" plain variant="secondary" onPress={() => void update($, showHelp, v => !v)} />
+          <Button key="help" label="?" variant="secondary" onPress={() => void update($, showHelp, v => !v)} />
           <Box flexGrow={1} minWidth={24}>
             <Input
               key="filter"
