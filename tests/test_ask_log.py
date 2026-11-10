@@ -6,6 +6,8 @@ import os
 import re
 import subprocess
 import sys
+import time
+from datetime import datetime, timezone
 
 from markdown_it import MarkdownIt
 
@@ -215,7 +217,7 @@ def test_hook_reminder_matches_the_display(tmp_path):
     vs = json.loads(run_script(tmp_path, "claude-vscode", {}, "hook", stdin=stdin))
     desk = json.loads(run_script(tmp_path, "claude-desktop", {}, "hook", stdin=stdin))
     assert "artifact" not in vs["hookSpecificOutput"]["additionalContext"].lower()
-    assert "same artifact" in desk["hookSpecificOutput"]["additionalContext"]
+    assert "Artifact publish, `file_path` = " in desk["hookSpecificOutput"]["additionalContext"]
 
 
 def add(path):
@@ -430,3 +432,132 @@ def test_long_links_get_break_points_but_short_words_do_not():
     out = ask_log.breakable("see https://github.com/raymondhe0/useful-skill ok")
     assert out.startswith("see ") and out.endswith(" ok") and out.count("<wbr>") >= 3
     assert ask_log.breakable("short words only") == "short words only"
+
+
+# --- one-message update: the hook announces everything, fill adds the questions itself ---
+
+def human(uid, text, ts):
+    return {"type": "user", "uuid": uid, "timestamp": ts, "origin": {"kind": "human"}, "message": {"content": text}}
+
+
+def queued(uid, text, ts):
+    return {"type": "attachment", "uuid": "r" + uid, "timestamp": ts, "attachment": {
+        "type": "queued_command", "commandMode": "prompt", "humanTurn": True, "source_uuid": uid,
+        "timestamp": ts, "prompt": text}}
+
+
+def now_iso(offset=0):
+    return datetime.fromtimestamp(time.time() + offset, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+class Session:
+    """A session whose transcript grows record by record, driven like the app drives it."""
+
+    def __init__(self, config, entry="claude-desktop"):
+        self.config, self.entry, self.records = config, entry, [custom("my chat")]
+        self.write()
+        run_cmd(config, "start", "s1", entry=entry)
+
+    def write(self):
+        folder = self.config / "projects" / "demo"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "s1.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in self.records),
+                                         encoding="utf-8")
+
+    def add(self, *records):
+        self.records += records
+        self.write()
+
+    def hook(self, prompt):
+        env = {**os.environ, "CLAUDE_CONFIG_DIR": str(self.config), "CLAUDE_CODE_ENTRYPOINT": self.entry,
+               "HOME": str(self.config), "XDG_CONFIG_HOME": str(self.config), "APPDATA": str(self.config)}
+        out = subprocess.run([sys.executable, SCRIPT, "hook"], input=json.dumps({"session_id": "s1", "prompt": prompt}),
+                             env=env, capture_output=True, text=True, check=True).stdout
+        return json.loads(out)["hookSpecificOutput"]["additionalContext"] if out else ""
+
+    def fill(self, data, check=True):
+        env = {**os.environ, "CLAUDE_CONFIG_DIR": str(self.config), "CLAUDE_CODE_ENTRYPOINT": self.entry,
+               "HOME": str(self.config), "XDG_CONFIG_HOME": str(self.config), "APPDATA": str(self.config)}
+        r = subprocess.run([sys.executable, SCRIPT, "fill", "--session", "s1"], input=json.dumps(data), env=env,
+                           capture_output=True, text=True)
+        assert (r.returncode == 0) == check, r.stderr
+        return json.loads(r.stdout)
+
+    def summaries(self):
+        state = json.load(open(self.config / "ask-log" / "s1.json", encoding="utf-8"))
+        return {e["n"]: (e["question"], e["summary"]) for e in state["entries"]}
+
+
+def test_current_goes_to_this_turns_question_and_a_queued_one_waits_for_the_next_turn(tmp_path):
+    s = Session(tmp_path)
+    s.hook("first question")
+    s.add(human("u1", "first question", now_iso()))
+    s.fill({"where_i_am": ["w"], "summaries": {"current": ["a1"]}})
+    context = s.hook("second question")
+    assert "Older questions" not in context
+    s.add(human("u2", "second question", now_iso()), queued("u3", "typed while you worked", now_iso(5)))
+    out = s.fill({"summaries": {"current": ["a2"]}})
+    assert out["pending_summaries"] == [3]
+    assert s.summaries() == {1: ("first question", ["a1"]), 2: ("second question", ["a2"]),
+                             3: ("typed while you worked", None)}
+    context = s.hook("third")
+    assert 'Q3 "typed while you worked"' in context and '"current": [...], "3": [...]' in context
+    s.add(human("u4", "third", now_iso()))
+    s.fill({"summaries": {"current": ["a4"], "3": ["a3"]}})
+    assert s.summaries()[3][1] == ["a3"] and s.summaries()[4] == ("third", ["a4"])
+
+
+def test_a_turn_that_skipped_the_update_does_not_take_this_turns_summary(tmp_path):
+    s = Session(tmp_path)
+    s.add(human("u1", "forgotten turn", now_iso(-600)))
+    s.hook("now")
+    s.add(human("u2", "now", now_iso()))
+    s.fill({"summaries": {"current": ["this turn"]}})
+    assert s.summaries() == {1: ("forgotten turn", None), 2: ("now", ["this turn"])}
+
+
+def test_a_prompt_whose_text_differs_is_found_by_time(tmp_path):
+    s = Session(tmp_path)
+    s.add(human("u1", "old", now_iso(-600)))
+    s.fill({"summaries": {"1": ["o"]}})
+    s.hook("look at this")
+    s.add({"type": "user", "uuid": "u2", "timestamp": now_iso(-2), "origin": {"kind": "human"},
+           "message": {"content": [{"type": "image", "source": {}}, {"type": "text", "text": "look at this"}]}})
+    s.fill({"summaries": {"current": ["img"]}})
+    assert s.summaries()[2] == ("[image]\n\nlook at this", ["img"])
+
+
+def test_a_summary_with_no_question_is_reported_and_the_rest_is_saved(tmp_path):
+    s = Session(tmp_path)
+    s.add(human("u1", "q", now_iso()))
+    out = s.fill({"where_i_am": ["kept"], "summaries": {"current": ["x"], "9": ["y"]}}, check=False)
+    assert out["not_found"] == ["current", "Q9"] and out["pending"] == [{"q": 1, "question": "q"}]
+    assert "kept" in open(out["page"], encoding="utf-8").read()
+
+
+def test_the_announced_page_is_the_one_fill_writes_even_after_a_rename_mid_turn(tmp_path):
+    s = Session(tmp_path)
+    s.fill({"artifact_url": ask_log.ARTIFACT_URL_PREFIX + "artifact/abc"})
+    context = s.hook("q")
+    announced = re.search(r"`file_path` = `([^`]+)`", context).group(1)
+    assert announced.endswith("my chat.md") and "`url` = `https://claude.ai/artifact/abc`" in context
+    s.add(human("u1", "q", now_iso()), custom("renamed"))
+    assert s.fill({"summaries": {"current": ["x"]}})["page"] == announced and os.path.exists(announced)
+    context = s.hook("next")
+    renamed = re.search(r"`file_path` = `([^`]+)`", context).group(1)
+    assert renamed.endswith("renamed.md")
+    s.add(human("u2", "next", now_iso()))
+    assert s.fill({"summaries": {"current": ["y"]}})["page"] == renamed and not os.path.exists(announced)
+
+
+def test_the_vscode_reminder_has_no_publish_step(tmp_path):
+    context = Session(tmp_path, entry="claude-vscode").hook("q")
+    assert "fill --session s1" in context and "publish nothing" in context and "Artifact" not in context
+
+
+def test_the_skill_command_turn_clears_the_announcement(tmp_path):
+    s = Session(tmp_path)
+    s.hook("q")
+    assert (tmp_path / "ask-log" / "s1.turn").exists()
+    assert s.hook("/ask-log:ask-log") == ""
+    assert not (tmp_path / "ask-log" / "s1.turn").exists()

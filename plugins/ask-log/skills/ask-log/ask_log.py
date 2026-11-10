@@ -10,7 +10,8 @@ else Claude publishes it as an artifact. Every command prints which one as `disp
 
   ask_log.py start  --session SID   create the log (if missing) and turn auto mode on
   ask_log.py append --session SID   add questions not yet in the log, print them as JSON
-  ask_log.py fill   --session SID   read {"where_i_am": [...], "summaries": {"5": [...]}, "artifact_url": "..."} on stdin
+  ask_log.py fill   --session SID   add new questions, then read {"where_i_am": [...], "summaries": {"current": [...], "5": [...]},
+                                    "artifact_url": "..."} on stdin; "current" is the question this turn answers
   ask_log.py off    --session SID   turn auto mode off (the log is kept)
   ask_log.py hook                   UserPromptSubmit hook: remind Claude while auto mode is on
 """
@@ -43,6 +44,7 @@ PREVIEW_EDITOR = "vscode.markdown.preview.editor"
 SETTINGS_PICKUP_SECONDS = 4  # 1 s was too short on 1.145; 2 s was enough
 ARTIFACT_URL_PREFIX = "https://claude.ai/"
 TITLE_MAX_CHARS = 60  # 60 four-byte characters plus ".md" still fit a 255-byte file name
+CURRENT_SLACK_SECONDS = 30  # the prompt record can be stamped a little before the hook runs
 
 
 def display_mode():
@@ -227,6 +229,18 @@ def flag_path(sid):
 
 def open_pending_path(sid):
     return os.path.join(STATE_DIR, f"{sid}.open")
+
+
+def turn_path(sid):
+    """What the hook saw when this turn started: the prompt, the time and the page name it announced."""
+    return os.path.join(STATE_DIR, f"{sid}.turn")
+
+
+def remove(path):
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
 
 
 def find_transcript(sid):
@@ -431,16 +445,21 @@ def page_name(sid, title):
     return (name or f"Ask Log {sid[:8]}") + ".md"
 
 
-def write_page(sid, state):
+def page_path(sid, name):
+    return os.path.join(STATE_DIR, "pages", sid, name)
+
+
+def write_page(sid, state, name=None):
     """Write the page the user sees, one folder per session so equal names can't collide.
 
     An unchanged name is overwritten in place, or an open preview would lose its file.
-    Returns the path and whether it is new.
+    `name` is the one the hook announced, so a rename during the turn can't change the path
+    Claude publishes. Returns the path and whether it is new.
     """
-    folder = os.path.join(STATE_DIR, "pages", sid)
+    name = name or page_name(sid, state.get("title") or "")
+    path = page_path(sid, name)
+    folder = os.path.dirname(path)
     os.makedirs(folder, exist_ok=True)
-    name = page_name(sid, state.get("title") or "")
-    path = os.path.join(folder, name)
     is_new = not os.path.exists(path)
     shutil.copyfile(log_path(sid), path)
     for other in os.listdir(folder):
@@ -464,15 +483,15 @@ def cmd_start(sid):
             "entries": [],
         })
     open(flag_path(sid), "w").close()
+    remove(turn_path(sid))
     result = {"log": log_path(sid), "created": created, "auto": True, "display": display_mode()}
     if result["display"] == "file":
         result["preview_setting"] = prepare_vscode_preview(sid)
     print(json.dumps(result, ensure_ascii=False))
 
 
-def cmd_append(sid):
-    state = load(sid)
-    transcript = find_transcript(sid)
+def add_new_turns(state, transcript):
+    """Add every question not yet in the log; return them with the answer so far."""
     state["title"] = session_title(transcript) or state.get("title", "")
     turns = read_turns(transcript)
     last = state["entries"][-1]["uuid"] if state["entries"] else None
@@ -487,28 +506,72 @@ def cmd_append(sid):
         if len(answer) > ANSWER_LIMIT:
             answer = answer[:ANSWER_LIMIT // 2] + "\n…[truncated]…\n" + answer[-ANSWER_LIMIT // 2:]
         report.append({"q": n, "question": t["question"], "answer_so_far": answer})
+    return report
+
+
+def cmd_append(sid):
+    state = load(sid)
+    report = add_new_turns(state, find_transcript(sid))
     save(sid, state)
     pending = [e["n"] for e in state["entries"] if not e["summary"]]
     print(json.dumps({"log": log_path(sid), "display": display_mode(), "added": report, "pending_summaries": pending},
                      ensure_ascii=False, indent=1))
 
 
+def epoch(ts):
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError):
+        return None
+
+
+def current_entry(state, turn):
+    """The question this turn answers: the newest one with the hook's prompt text, else the
+    first one asked once the turn began (later ones were typed while Claude was working)."""
+    if not turn:
+        return None
+    want = " ".join((turn.get("prompt") or "").split())
+    for e in reversed(state["entries"]):
+        if want and " ".join(e["question"].split()) == want:
+            return e
+    since = turn.get("time", 0) - CURRENT_SLACK_SECONDS
+    return next((e for e in state["entries"] if (epoch(e["ts"]) or 0) >= since), None)
+
+
+def read_turn(sid):
+    try:
+        return json.load(open(turn_path(sid), encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
 def cmd_fill(sid):
     state = load(sid)
     data = json.load(sys.stdin)
+    add_new_turns(state, find_transcript(sid))
+    turn = read_turn(sid)
     by_n = {e["n"]: e for e in state["entries"]}
+    missing = []
     for key, items in (data.get("summaries") or {}).items():
-        n = int(str(key).lstrip("Qq"))
-        if n not in by_n:
-            sys.exit(f"ask-log: no question Q{n}")
-        by_n[n]["summary"] = [items] if isinstance(items, str) else list(items)
+        if str(key).lower() == "current":
+            entry = current_entry(state, turn)
+            if not entry:
+                missing.append("current")
+                continue
+        else:
+            entry = by_n.get(int(str(key).lstrip("Qq")))
+            if not entry:
+                missing.append(f"Q{key}")
+                continue
+        entry["summary"] = [items] if isinstance(items, str) else list(items)
     if "where_i_am" in data:
         state["where_i_am"] = list(data["where_i_am"])
     if str(data.get("artifact_url") or "").startswith(ARTIFACT_URL_PREFIX):
         state["artifact_url"] = data["artifact_url"]
     save(sid, state)
     pending = [e["n"] for e in state["entries"] if not e["summary"]]
-    page, is_new = write_page(sid, state)
+    page, is_new = write_page(sid, state, (turn or {}).get("page"))
+    remove(turn_path(sid))
     result = {"page": page, "display": display_mode(), "pending_summaries": pending}
     if result["display"] == "file":
         if is_new or os.path.exists(open_pending_path(sid)):
@@ -517,34 +580,58 @@ def cmd_fill(sid):
             os.remove(open_pending_path(sid))
     else:
         result["artifact_url"] = state.get("artifact_url")
+    if missing:
+        result["not_found"] = missing
+        result["pending"] = [{"q": e["n"], "question": e["question"][:200]} for e in state["entries"] if not e["summary"]]
     print(json.dumps(result, ensure_ascii=False))
+    if missing:
+        sys.exit(f"ask-log: no question for {', '.join(missing)}; the rest was saved, see `pending`")
 
 
 def cmd_off(sid):
-    try:
-        os.remove(flag_path(sid))
-    except FileNotFoundError:
-        pass
+    remove(flag_path(sid))
+    remove(turn_path(sid))
     print(json.dumps({"log": log_path(sid), "auto": False}))
 
 
 def cmd_hook():
+    """Tell Claude everything the update needs, so it can ride on the turn's last tool message:
+    every extra model call re-reads the whole conversation, which is most of ask-log's cost."""
     data = json.load(sys.stdin)
     sid = data.get("session_id", "")
     if not sid or not os.path.exists(flag_path(sid)):
         return
-    if (data.get("prompt") or "").lstrip().startswith("/ask-log"):
+    prompt = data.get("prompt") or ""
+    if prompt.lstrip().startswith("/ask-log"):
+        remove(turn_path(sid))  # the skill's own steps run this turn
         return
-    finish = (
-        "The open preview refreshes by itself, so there is nothing to publish."
-        if display_mode() == "file"
-        else "Then publish the `page` path that step prints as the same artifact, passing its `artifact_url` as `url`."
-    )
+    try:
+        state = json.load(open(state_path(sid), encoding="utf-8"))
+        hits = glob.glob(os.path.join(PROJECTS_DIR, "*", f"{sid}.jsonl"))
+        title = session_title(max(hits, key=os.path.getmtime)) if hits else ""
+    except (OSError, ValueError):
+        return
+    name = page_name(sid, title or state.get("title") or "")
+    with open(turn_path(sid), "w", encoding="utf-8") as f:
+        json.dump({"prompt": prompt, "time": time.time(), "page": name}, f, ensure_ascii=False)
+    older = [e["n"] for e in state["entries"] if not e["summary"]]
+    fill = (f"Bash: `python3 {SCRIPT} fill --session {sid} <<'EOF'` + "
+            '{"where_i_am": [...], "summaries": {"current": [...]' + "".join(f', "{n}": [...]' for n in older) + "}}"
+            " + `EOF` (\"current\" is this turn's question; the script adds it to the log itself)")
+    if display_mode() == "file":
+        steps = f"1) {fill}; 2) `wrap_up`, if you call it. The open preview refreshes by itself; publish nothing."
+    else:
+        url = state.get("artifact_url")
+        publish = f"Artifact publish, `file_path` = `{page_path(sid, name)}`" + (f", `url` = `{url}`" if url else "")
+        steps = f"1) {fill}; 2) {publish}; 3) `wrap_up`, if you call it."
+    pending = "; ".join(f"Q{e['n']} {json.dumps(' '.join(e['question'].split())[:100], ensure_ascii=False)}"
+                        for e in state["entries"] if not e["summary"])
     context = (
-        "ask-log auto mode is on for this session. When this turn's work is done, before the "
-        f"closing message, update the log: run `python3 {SCRIPT} append --session {sid}`, then "
-        f"pipe the new summaries and the Where I am bullets to `python3 {SCRIPT} fill --session {sid}`. "
-        f"{finish} Full steps: {SKILL_FILE} (section Update)."
+        "ask-log auto mode is on for this session. When this turn's work is done, update the log in the "
+        "message where you call `wrap_up`, as its first tool calls, in this order (with no `wrap_up` this turn, "
+        f"send them as one message right before the closing message): {steps} "
+        + (f"Older questions still without a summary, add them under their numbers: {pending}. " if pending else "")
+        + f"How to write the summaries and Where I am: {SKILL_FILE} (section Update)."
     )
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
                                              "additionalContext": context}}))

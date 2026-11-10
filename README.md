@@ -46,6 +46,8 @@ Your previous settings are saved next to the file as `settings.json.ask-log-back
 ### Good to know
 
 - **Secrets:** questions are logged word for word. A password or API key pasted into the conversation ends up in the log and on the page, so check before you share the link. Pages are private until you share them.
+- **Usage:** every extra model call re-reads the whole conversation, so the update rides on the last message Claude sends in a turn instead of taking calls of its own. In one long session before 1.4.0, the log took about 19% of usage; 1.4.0 should bring that to about 5% (an estimate, not yet measured).
+- **Questions typed while Claude is working:** they are logged right away, and their summary is filled in at the next turn.
 - **Windows:** not tested.
 - **Language:** summaries are written in Chinese. To change that, edit `plugins/ask-log/skills/ask-log/SKILL.md`.
 - **Storage:** logs are kept in `~/.claude/ask-log/`, one set of files per conversation.
